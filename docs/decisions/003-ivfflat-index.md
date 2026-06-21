@@ -19,6 +19,32 @@ The `lists` parameter controls how many clusters IVFFlat builds. Too few → slo
 
 Use IVFFlat with `vector_cosine_ops` on all four tables. Size `lists` to `sqrt(expected_row_count)`, rounded:
 
+```
+How IVFFlat works:
+
+  Training phase (at CREATE INDEX time):
+  ┌─────────────────────────────────────────────┐
+  │  All vectors in the table                   │
+  │  · · · · · · ·   ·  · ·                    │
+  │    · · ·  ·   · ·  · ·  ·                  │
+  │  IVFFlat groups them into N clusters (lists)│
+  │   [list 1]   [list 2]   [list 3] ...        │
+  └─────────────────────────────────────────────┘
+
+  Query phase:
+  question vector → find nearest lists → search only those lists → return top K
+                                ↑
+                         probes parameter (default 1)
+                         higher probes = better recall, slower query
+
+lists sizing per table:
+
+  interests_vectors       ~20,000 rows  →  lists = 100  (√20k  ≈ 141)
+  party_donations_vectors ~50,000 rows  →  lists = 100  (√50k  ≈ 224)
+  votes_vectors          ~500,000 rows  →  lists = 700  (√500k ≈ 707) ← different
+  appg_vectors             ~5,000 rows  →  lists = 100  (√5k   ≈  71)
+```
+
 | Table | Expected rows | lists |
 |---|---|---|
 | interests_vectors | ~20,000 | 100 |

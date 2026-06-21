@@ -11,6 +11,16 @@ into `appg_vectors` using TheyWorkForYou as the data source.
 
 During implementation we found:
 
+```
+Sources investigated:
+
+  TheyWorkForYou API          ──→  £20–£300/month          ✗  paid
+  data.parliament.uk OData    ──→  404 Not Found            ✗  retired
+  Members API /Biography      ──→  no APPG roles in data   ✗  wrong endpoint
+  publications.parliament.uk  ──→  403 Forbidden            ✗  blocks automation
+  Parliament Interests API    ──→  partial (financial APPGs only) ~  already in interests_vectors
+```
+
 - **TheyWorkForYou API** is now a paid service (£20–£300/month). At 647 MPs per
   run, even the cheapest plan (1,000 calls/month) barely covers one full
   ingestion, making it unviable for a weekly refresh.

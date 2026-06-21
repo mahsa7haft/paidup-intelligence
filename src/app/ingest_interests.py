@@ -25,13 +25,33 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 
+from app.config import EMBED_BATCH, EMBED_MODEL, INTERESTS_API, MEMBERS_API
+from app import run_log
+
 load_dotenv()
 
-MEMBERS_API   = "https://members-api.parliament.uk/api"
-INTERESTS_API = "https://interests-api.parliament.uk/api/v1"
-PAGE_SIZE     = 100
-EMBED_MODEL   = "text-embedding-3-small"
-EMBED_BATCH   = 100  # max inputs per OpenAI embeddings request
+PAGE_SIZE = 100  # Parliament Members/Search API page size
+CHECKPOINT_FILE = ".ingest_interests_checkpoint.json"
+
+
+def _load_checkpoint() -> int:
+    try:
+        with open(CHECKPOINT_FILE) as f:
+            return json.load(f).get("mp_index", 0)
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _save_checkpoint(mp_index: int) -> None:
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump({"mp_index": mp_index}, f)
+
+
+def _clear_checkpoint() -> None:
+    try:
+        os.remove(CHECKPOINT_FILE)
+    except FileNotFoundError:
+        pass
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -187,7 +207,13 @@ def _upsert(cur, rows: list[dict]) -> None:
 
 # ── Per-MP ingestion ───────────────────────────────────────────────────────────
 
-def _ingest_mp(conn, client: OpenAI, mp: dict, company_map: dict, tag_rules: list) -> dict:
+def _connect(db_url: str):
+    conn = psycopg2.connect(db_url)
+    register_vector(conn)
+    return conn
+
+
+def _ingest_mp(db_url: str, client: OpenAI, mp: dict, company_map: dict, tag_rules: list) -> dict:
     member_id = mp["id"]
     name      = mp["nameDisplayAs"]
     party     = mp["latestParty"]["name"]
@@ -198,8 +224,10 @@ def _ingest_mp(conn, client: OpenAI, mp: dict, company_map: dict, tag_rules: lis
 
     interests = _parse_interests(raw_interests)
 
+    conn = _connect(db_url)
     with conn.cursor() as cur:
         existing = _fetch_existing_hashes(cur, member_id)
+    conn.close()
 
     # Determine which interests need embedding
     to_embed = []
@@ -238,9 +266,11 @@ def _ingest_mp(conn, client: OpenAI, mp: dict, company_map: dict, tag_rules: lis
             "content_hash": interest["_content_hash"],
         })
 
+    conn = _connect(db_url)
     with conn.cursor() as cur:
         _upsert(cur, rows)
     conn.commit()
+    conn.close()
 
     return {"status": "embedded", "embedded": len(rows), "skipped": len(interests) - len(to_embed)}
 
@@ -255,13 +285,13 @@ def main() -> None:
         raise SystemExit("OPENAI_API_KEY not set")
 
     db_url = db_url.replace("postgres://", "postgresql://", 1)
-    conn   = psycopg2.connect(db_url)
-    register_vector(conn)
     client = OpenAI()
 
+    conn = _connect(db_url)
     log.info("Loading PaidUp enrichment data…")
     company_map, tag_rules = _load_enrichment(conn)
     log.info("  donor_company_links: %d  donor_tags: %d", len(company_map), len(tag_rules))
+    conn.close()
 
     log.info("Fetching MP list…")
     mps = _all_mps()
@@ -269,34 +299,50 @@ def main() -> None:
 
     counts = {"embedded": 0, "skipped": 0, "no-interests": 0, "error": 0}
 
-    for i, mp in enumerate(mps, 1):
-        name = mp["nameDisplayAs"]
-        try:
-            result = _ingest_mp(conn, client, mp, company_map, tag_rules)
-            status = result["status"]
-            if status == "embedded":
-                counts["embedded"] += result["embedded"]
-                counts["skipped"]  += result["skipped"]
-                log.info("[%3d/%d] embedded %-3d  skipped %-3d  %s",
-                         i, len(mps), result["embedded"], result["skipped"], name)
-            elif status == "skip":
-                counts["skipped"] += result["count"]
-                log.info("[%3d/%d] skip            (%d unchanged)  %s",
-                         i, len(mps), result["count"], name)
-            else:
-                counts["no-interests"] += 1
-                log.info("[%3d/%d] no-interests                     %s", i, len(mps), name)
-        except Exception as exc:
-            counts["error"] += 1
-            log.error("[%3d/%d] ERROR %s: %s", i, len(mps), name, exc)
+    resume_from = _load_checkpoint()
+    if resume_from:
+        log.info("Resuming from MP %d/%d (delete %s to start over)",
+                 resume_from, len(mps), CHECKPOINT_FILE)
 
-        time.sleep(0.5)  # polite pause between MPs
+    run_id = run_log.start_run(db_url, "ingest_interests")
+    try:
+        for i, mp in enumerate(mps, 1):
+            if i <= resume_from:
+                continue
+            name = mp["nameDisplayAs"]
+            try:
+                result = _ingest_mp(db_url, client, mp, company_map, tag_rules)
+                status = result["status"]
+                if status == "embedded":
+                    counts["embedded"] += result["embedded"]
+                    counts["skipped"]  += result["skipped"]
+                    log.info("[%3d/%d] embedded %-3d  skipped %-3d  %s",
+                             i, len(mps), result["embedded"], result["skipped"], name)
+                elif status == "skip":
+                    counts["skipped"] += result["count"]
+                    log.info("[%3d/%d] skip            (%d unchanged)  %s",
+                             i, len(mps), result["count"], name)
+                else:
+                    counts["no-interests"] += 1
+                    log.info("[%3d/%d] no-interests                     %s", i, len(mps), name)
+            except Exception as exc:
+                counts["error"] += 1
+                log.error("[%3d/%d] ERROR %s: %s", i, len(mps), name, exc)
 
-    conn.close()
-    log.info(
-        "\nDone. embedded=%d  skipped=%d  no-interests=%d  errors=%d",
-        counts["embedded"], counts["skipped"], counts["no-interests"], counts["error"],
-    )
+            _save_checkpoint(i)
+            time.sleep(0.5)
+
+        _clear_checkpoint()
+        log.info(
+            "\nDone. embedded=%d  skipped=%d  no-interests=%d  errors=%d",
+            counts["embedded"], counts["skipped"], counts["no-interests"], counts["error"],
+        )
+        run_log.finish_run(db_url, run_id, "success",
+                           counts["embedded"], counts["skipped"], counts["error"])
+    except Exception as exc:
+        run_log.finish_run(db_url, run_id, "error",
+                           counts["embedded"], counts["skipped"], counts["error"], notes=str(exc))
+        raise
 
 
 if __name__ == "__main__":

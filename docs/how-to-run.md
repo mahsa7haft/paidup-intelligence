@@ -65,16 +65,13 @@ Every run is recorded in the `ingest_runs` table. Connect to Railway Postgres an
 
 ```sql
 -- See all recent runs
-SELECT id, script, started_at, finished_at, status, embedded, skipped, errors
-FROM ingest_runs
-ORDER BY started_at DESC
-LIMIT 20;
+SELECT id, script, started_at, finished_at, status, embedded, skipped, errors FROM ingest_runs ORDER BY started_at DESC;
 
 -- Find interrupted runs (crashed mid-run)
-SELECT * FROM ingest_runs
-WHERE finished_at IS NULL OR status = 'running'
-ORDER BY started_at DESC;
+SELECT * FROM ingest_runs WHERE finished_at IS NULL OR status = 'running' ORDER BY started_at DESC;
 ```
+
+> **Railway UI note:** Keep queries on one line. Railway's query editor adds its own `LIMIT` clause — a `LIMIT` in your query causes a syntax error.
 
 ---
 
@@ -94,46 +91,56 @@ SELECT 'appgs',                COUNT(*) FROM appg_vectors;
 
 ## Option 2 — Scheduled cron job on Railway
 
-Railway has a native Cron Job service type — no Docker needed, same nixpacks build as the main app.
+No Docker needed — Railway builds the Python environment automatically via nixpacks.
 
-### Step 1 — Create the cron service
+### Step 1 — Create the service
 
 1. Go to your Railway project dashboard
 2. Click **New Service → Empty Service**
-3. In the service settings, change the service type to **Cron Job**
-4. Connect the same GitHub repo (`paidup-intelligence`)
 
-### Step 2 — Set the build and run commands
+### Step 2 — Connect the repo
 
-In the service settings:
+In the service **Settings → Source**:
+- Source Repo: `mahsa7haft/paidup-intelligence`
+- Branch: `main`
+
+### Step 3 — Configure deploy settings
+
+In **Settings → Deploy**:
 
 | Setting | Value |
 |---------|-------|
-| Build command | `uv sync` |
-| Start / run command | `bash -c "PYTHONPATH=src uv run python -m app.ingest_all"` |
-| Schedule | `0 2 * * 0` (Sundays at 2am — adjust to taste) |
+| Custom Start Command | `PYTHONPATH=src python -m app.ingest_all` |
+| Cron Schedule | `0 2 1 * *` |
+| Restart Policy | **Never** |
+| Serverless | **Off** (cron schedules require a non-serverless service) |
 
-`ingest_all.py` runs interests → donations → votes in sequence, each with their own checkpoint and run logging.
+> **Teardown** controls when the old deployment is terminated after a new one starts. Leave at default — not relevant for a cron job.
 
-### Step 3 — Add environment variables
+`ingest_all.py` runs interests → donations → votes in sequence. Each has its own checkpoint file and run log entry.
 
-Copy these from your main app service in Railway (or set them directly):
+### Step 4 — Add environment variables
+
+In the service **Variables** tab, add:
 
 ```
-DATABASE_URL        ← will automatically use internal URL when running on Railway
+DATABASE_URL
 OPENAI_API_KEY
 ANTHROPIC_API_KEY
+THEYWORKFORYOU_API_KEY
 ```
 
-### Step 4 — Deploy
+Copy the values from your main app service (or your local `.env`).
 
-Push to main or trigger a manual deploy. The cron service will run on schedule and each run will appear in `ingest_runs`.
+### Step 5 — Deploy
+
+Click **Deploy** or push to main. Railway will build the image with nixpacks. The cron service will sleep between runs and wake on schedule. Each run appears in `ingest_runs`.
 
 **Cron schedule syntax reference:**
 
 ```
+0 2 1 * *   → first day of every month at 2am  ← recommended for monthly data
 0 2 * * 0   → every Sunday at 2am
-0 2 1 * *   → first day of every month at 2am
 0 2 * * *   → every day at 2am
 ```
 

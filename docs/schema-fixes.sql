@@ -13,6 +13,19 @@ DROP INDEX IF EXISTS idx_votes_embedding_ivfflat;
 CREATE INDEX IF NOT EXISTS idx_votes_embedding_ivfflat
   ON votes_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 700);
 
+-- 3. Ingestion run audit log
+CREATE TABLE IF NOT EXISTS ingest_runs (
+    id          SERIAL      PRIMARY KEY,
+    script      TEXT        NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ,
+    status      TEXT        NOT NULL DEFAULT 'running',  -- running | success | error
+    embedded    INT         NOT NULL DEFAULT 0,
+    skipped     INT         NOT NULL DEFAULT 0,
+    errors      INT         NOT NULL DEFAULT 0,
+    notes       TEXT        NOT NULL DEFAULT ''
+);
+
 -- NOTE: All IVFFlat indexes should be dropped and recreated after the first
 -- data load, because centroids are learned from existing rows. Empty-table
 -- indexes have no meaningful centroids. Run this after initial ingestion:

@@ -8,3 +8,5 @@ dist/
 *.egg-info/
 .claude/
 .vscode/
+.ingest_*_checkpoint.json
+src/app/data/

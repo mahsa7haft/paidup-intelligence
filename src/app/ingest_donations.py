@@ -24,12 +24,31 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 
-load_dotenv()
+from app.config import EC_API, EMBED_BATCH, EMBED_MODEL, FETCH_ROWS
+from app import run_log
 
-EC_API      = "https://search.electoralcommission.org.uk/api/search/Donations"
-EMBED_MODEL = "text-embedding-3-small"
-EMBED_BATCH = 100
-FETCH_ROWS  = 100  # records per API page
+load_dotenv()
+CHECKPOINT_FILE = ".ingest_donations_checkpoint.json"
+
+
+def _load_checkpoint() -> int:
+    try:
+        with open(CHECKPOINT_FILE) as f:
+            return json.load(f).get("start", 0)
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _save_checkpoint(start: int) -> None:
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump({"start": start}, f)
+
+
+def _clear_checkpoint() -> None:
+    try:
+        os.remove(CHECKPOINT_FILE)
+    except FileNotFoundError:
+        pass
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -65,10 +84,15 @@ def _fetch_page(params: dict, attempt: int = 0) -> dict:
 
 def _donation_pages():
     """
-    Generator — yields one parsed page of records at a time.
-    Fetches, parses, and yields immediately so the caller can embed+upsert
-    each page without holding all 81k records in memory.
+    Generator — yields (records, start_offset) one page at a time.
+    Resumes from the saved checkpoint so re-runs skip already-processed pages.
+    Caller saves checkpoint AFTER a successful upsert using the yielded offset.
     """
+    resume_at = _load_checkpoint()
+    if resume_at:
+        log.info("Resuming from EC API offset %d (delete %s to start over)",
+                 resume_at, CHECKPOINT_FILE)
+
     params = {
         "query":                   "",
         "sort":                    "AcceptedDate",
@@ -80,10 +104,10 @@ def _donation_pages():
         "isIrishSourceNo":         "true",
         "includeOutsideSection75": "true",
         "rows":                    FETCH_ROWS,
-        "start":                   0,
+        "start":                   resume_at,
     }
 
-    fetched, total = 0, None
+    fetched, total = resume_at, None
     while True:
         data    = _fetch_page(params)
         total   = total or data.get("Total", 0)
@@ -92,7 +116,7 @@ def _donation_pages():
             break
         fetched += len(results)
         log.info("  fetched %d / %d", fetched, total)
-        yield [r for raw in results if (r := _parse_record(raw))]
+        yield [r for raw in results if (r := _parse_record(raw))], params["start"]
         if fetched >= total:
             break
         params["start"] += FETCH_ROWS
@@ -219,6 +243,12 @@ def _upsert(cur, rows: list[dict]) -> None:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def _connect(db_url: str):
+    conn = psycopg2.connect(db_url)
+    register_vector(conn)
+    return conn
+
+
 def main() -> None:
     db_url = os.environ.get("DATABASE_URL", "")
     if not db_url:
@@ -227,62 +257,70 @@ def main() -> None:
         raise SystemExit("OPENAI_API_KEY not set")
 
     db_url = db_url.replace("postgres://", "postgresql://", 1)
-    conn   = psycopg2.connect(db_url)
-    register_vector(conn)
     client = OpenAI()
 
+    # Short-lived connection just for setup queries
+    conn = _connect(db_url)
     log.info("Loading PaidUp enrichment data…")
     company_map, tag_rules = _load_enrichment(conn)
-
     log.info("Fetching existing hashes…")
     with conn.cursor() as cur:
         existing = _fetch_existing_hashes(cur)
+    conn.close()
     log.info("  %d records already in DB.", len(existing))
 
-    log.info("Fetching and embedding EC donations page by page…")
     total_embedded, total_skipped = 0, 0
+    run_id = run_log.start_run(db_url, "ingest_donations")
+    try:
+        log.info("Fetching and embedding EC donations page by page…")
 
-    for page_records in _donation_pages():
-        to_embed = []
-        for record in page_records:
-            source_id    = f"donation_{record['ec_ref']}"
-            content      = _build_content(record)
-            content_hash = _sha256(content)
-            record["_source_id"]    = source_id
-            record["_content"]      = content
-            record["_content_hash"] = content_hash
-            if existing.get(source_id) != content_hash:
-                to_embed.append(record)
+        for page_records, page_start in _donation_pages():
+            to_embed = []
+            for record in page_records:
+                source_id    = f"donation_{record['ec_ref']}"
+                content      = _build_content(record)
+                content_hash = _sha256(content)
+                record["_source_id"]    = source_id
+                record["_content"]      = content
+                record["_content_hash"] = content_hash
+                if existing.get(source_id) != content_hash:
+                    to_embed.append(record)
 
-        total_skipped += len(page_records) - len(to_embed)
+            total_skipped += len(page_records) - len(to_embed)
 
-        if not to_embed:
-            continue
+            if to_embed:
+                embeddings = _embed_batch(client, [r["_content"] for r in to_embed])
+                rows = []
+                for record, embedding in zip(to_embed, embeddings):
+                    rows.append({
+                        "source_id":     record["_source_id"],
+                        "party_name":    record["party"],
+                        "donor_name":    record["donor"],
+                        "amount":        record["value"],
+                        "donation_date": record["date"] or None,
+                        "content":       record["_content"],
+                        "metadata":      json.dumps(_build_metadata(record, company_map, tag_rules)),
+                        "embedding":     embedding,
+                        "content_hash":  record["_content_hash"],
+                    })
 
-        embeddings = _embed_batch(client, [r["_content"] for r in to_embed])
-        rows = []
-        for record, embedding in zip(to_embed, embeddings):
-            rows.append({
-                "source_id":     record["_source_id"],
-                "party_name":    record["party"],
-                "donor_name":    record["donor"],
-                "amount":        record["value"],
-                "donation_date": record["date"] or None,
-                "content":       record["_content"],
-                "metadata":      json.dumps(_build_metadata(record, company_map, tag_rules)),
-                "embedding":     embedding,
-                "content_hash":  record["_content_hash"],
-            })
+                conn = _connect(db_url)
+                with conn.cursor() as cur:
+                    _upsert(cur, rows)
+                conn.commit()
+                conn.close()
+                total_embedded += len(rows)
+                log.info("  embedded %d this page  |  total embedded=%d  skipped=%d",
+                         len(rows), total_embedded, total_skipped)
 
-        with conn.cursor() as cur:
-            _upsert(cur, rows)
-        conn.commit()
-        total_embedded += len(rows)
-        log.info("  embedded %d this page  |  total embedded=%d  skipped=%d",
-                 len(rows), total_embedded, total_skipped)
+            _save_checkpoint(page_start)
 
-    conn.close()
-    log.info("\nDone. embedded=%d  skipped=%d", total_embedded, total_skipped)
+        _clear_checkpoint()
+        log.info("\nDone. embedded=%d  skipped=%d", total_embedded, total_skipped)
+        run_log.finish_run(db_url, run_id, "success", total_embedded, total_skipped)
+    except Exception as exc:
+        run_log.finish_run(db_url, run_id, "error", total_embedded, total_skipped, notes=str(exc))
+        raise
 
 
 if __name__ == "__main__":

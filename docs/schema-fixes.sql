@@ -15,16 +15,20 @@ CREATE INDEX IF NOT EXISTS idx_votes_embedding_ivfflat
 
 -- 3. Ingestion run audit log
 CREATE TABLE IF NOT EXISTS ingest_runs (
-    id          SERIAL      PRIMARY KEY,
-    script      TEXT        NOT NULL,
-    started_at  TIMESTAMPTZ NOT NULL,
-    finished_at TIMESTAMPTZ,
-    status      TEXT        NOT NULL DEFAULT 'running',  -- running | success | error
-    embedded    INT         NOT NULL DEFAULT 0,
-    skipped     INT         NOT NULL DEFAULT 0,
-    errors      INT         NOT NULL DEFAULT 0,
-    notes       TEXT        NOT NULL DEFAULT ''
+    id              SERIAL      PRIMARY KEY,
+    script          TEXT        NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL,
+    finished_at     TIMESTAMPTZ,
+    last_updated_at TIMESTAMPTZ,
+    status          TEXT        NOT NULL DEFAULT 'running',  -- running | success | error
+    embedded        INT         NOT NULL DEFAULT 0,
+    skipped         INT         NOT NULL DEFAULT 0,
+    errors          INT         NOT NULL DEFAULT 0,
+    notes           TEXT        NOT NULL DEFAULT ''
 );
+
+-- 4. Add last_updated_at to existing ingest_runs table (if already created without it)
+ALTER TABLE ingest_runs ADD COLUMN IF NOT EXISTS last_updated_at TIMESTAMPTZ;
 
 -- NOTE: All IVFFlat indexes should be dropped and recreated after the first
 -- data load, because centroids are learned from existing rows. Empty-table

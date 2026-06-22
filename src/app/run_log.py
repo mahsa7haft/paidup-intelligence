@@ -62,10 +62,10 @@ def update_run_progress(
             cur.execute(
                 """
                 UPDATE ingest_runs
-                SET embedded = %s, skipped = %s, errors = %s
+                SET embedded = %s, skipped = %s, errors = %s, last_updated_at = %s
                 WHERE id = %s
                 """,
-                (embedded, skipped, errors, run_id),
+                (embedded, skipped, errors, datetime.now(tz=timezone.utc), run_id),
             )
         conn.commit()
         conn.close()
@@ -88,18 +88,20 @@ def finish_run(
     try:
         conn = _connect(db_url)
         with conn.cursor() as cur:
+            now = datetime.now(tz=timezone.utc)
             cur.execute(
                 """
                 UPDATE ingest_runs
-                SET finished_at = %s,
-                    status      = %s,
-                    embedded    = %s,
-                    skipped     = %s,
-                    errors      = %s,
-                    notes       = %s
+                SET finished_at     = %s,
+                    last_updated_at = %s,
+                    status          = %s,
+                    embedded        = %s,
+                    skipped         = %s,
+                    errors          = %s,
+                    notes           = %s
                 WHERE id = %s
                 """,
-                (datetime.now(tz=timezone.utc), status, embedded, skipped, errors, notes, run_id),
+                (now, now, status, embedded, skipped, errors, notes, run_id),
             )
         conn.commit()
         conn.close()

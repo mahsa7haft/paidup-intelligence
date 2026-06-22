@@ -124,9 +124,9 @@ def _donation_pages():
 
 
 def _parse_record(raw: dict) -> dict | None:
-    ec_ref = raw.get("ECRef", "").strip()
-    party  = raw.get("RegulatedEntityName", "").strip()
-    donor  = raw.get("DonorName", "").strip()
+    ec_ref = (raw.get("ECRef") or "").strip()
+    party  = (raw.get("RegulatedEntityName") or "").strip()
+    donor  = (raw.get("DonorName") or "").strip()
     if not (ec_ref and party and donor):
         return None
 

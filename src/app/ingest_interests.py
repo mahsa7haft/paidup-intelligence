@@ -330,6 +330,7 @@ def main() -> None:
                 log.error("[%3d/%d] ERROR %s: %s", i, len(mps), name, exc)
 
             _save_checkpoint(i)
+            run_log.update_run_progress(db_url, run_id, counts["embedded"], counts["skipped"], counts["error"])
             time.sleep(0.5)
 
         _clear_checkpoint()

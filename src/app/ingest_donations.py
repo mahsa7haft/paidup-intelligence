@@ -314,6 +314,7 @@ def main() -> None:
                          len(rows), total_embedded, total_skipped)
 
             _save_checkpoint(page_start)
+            run_log.update_run_progress(db_url, run_id, total_embedded, total_skipped)
 
         _clear_checkpoint()
         log.info("\nDone. embedded=%d  skipped=%d", total_embedded, total_skipped)

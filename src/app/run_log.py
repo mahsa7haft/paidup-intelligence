@@ -46,6 +46,33 @@ def start_run(db_url: str, script: str) -> int | None:
         return None
 
 
+def update_run_progress(
+    db_url: str,
+    run_id: int | None,
+    embedded: int = 0,
+    skipped: int = 0,
+    errors: int = 0,
+) -> None:
+    """Update live counters mid-run so the table shows progress before finish_run is called."""
+    if run_id is None:
+        return
+    try:
+        conn = _connect(db_url)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ingest_runs
+                SET embedded = %s, skipped = %s, errors = %s
+                WHERE id = %s
+                """,
+                (embedded, skipped, errors, run_id),
+            )
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        log.warning("Could not update run progress: %s", exc)
+
+
 def finish_run(
     db_url: str,
     run_id: int | None,

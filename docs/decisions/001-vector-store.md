@@ -15,6 +15,28 @@ The project needs a vector store for semantic search across four datasets (MP in
 
 Use pgvector on the existing Railway Postgres.
 
+```
+┌─────────────────┐     ┌──────────────────────────┐
+│     PaidUp      │     │   paidup-intelligence     │
+│   (Flask app)   │     │  (ingestion + agent)      │
+└────────┬────────┘     └────────────┬──────────────┘
+         │                           │
+         └─────────────┬─────────────┘
+                       ▼
+          ┌────────────────────────┐
+          │   Railway Postgres     │
+          │                        │
+          │  analyses              │ ← PaidUp
+          │  donor_company_links   │ ← PaidUp (shared)
+          │  donor_tags            │ ← PaidUp (shared)
+          │  ─────────────────     │
+          │  interests_vectors     │ ← paidup-intelligence
+          │  party_donations_vectors│ ← paidup-intelligence
+          │  votes_vectors         │ ← paidup-intelligence
+          │  appg_vectors          │ ← paidup-intelligence
+          └────────────────────────┘
+```
+
 ## Consequences
 
 **Good:**

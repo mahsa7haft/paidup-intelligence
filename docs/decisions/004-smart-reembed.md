@@ -17,6 +17,33 @@ Each vector table has a `content_hash TEXT` column. During ingestion:
 3. Upsert with `ON CONFLICT (source_id) DO UPDATE SET ... WHERE content_hash != EXCLUDED.content_hash`
 4. Only call the OpenAI embeddings API for rows where the hash changed (or is new)
 
+```
+Per record on every ingestion run:
+
+  fetch record from API
+         │
+         ▼
+  build content sentence
+  "MP X (Party) received £N from Y as Z, registered D."
+         │
+         ▼
+  sha256(sentence) ──→ content_hash
+         │
+         ├── hash matches stored hash? ──→ SKIP  (free, no API call)
+         │
+         └── hash changed or new record?
+                    │
+                    ▼
+              OpenAI embeddings API  (costs money)
+                    │
+                    ▼
+              upsert row with new embedding + new hash
+
+Cost impact:
+  First run:   ~20,000 API calls for interests  (~$0.02)
+  Re-run:      ~0 API calls if register unchanged  (~$0.00)
+```
+
 This means unchanged records are touched with a cheap hash comparison, not an expensive API call.
 
 ## Consequences

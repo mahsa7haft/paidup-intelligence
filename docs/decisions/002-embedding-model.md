@@ -18,6 +18,37 @@ Use `text-embedding-3-small` at the default 1536 dimensions.
 
 All four vector tables use `VECTOR(1536)` to match.
 
+```
+  "MP Starmer (Labour) received £5,000 from Unite as a Cash, registered 2024-03-15."
+                                       │
+                                       ▼
+                         ┌─────────────────────────┐
+                         │   text-embedding-3-small │
+                         │        (OpenAI)          │
+                         └─────────────────────────┘
+                                       │
+                                       ▼
+              [0.023, -0.847, 0.234, 0.091, -0.442 ... 1,536 numbers]
+                                       │
+                                       ▼
+                         ┌─────────────────────────┐
+                         │  VECTOR(1536) in Postgres│
+                         │  interests_vectors       │
+                         └─────────────────────────┘
+
+At query time, the question is embedded the same way:
+
+  "which MPs got money from trade unions?"
+                    │
+                    ▼  text-embedding-3-small
+                    │
+            [question vector]
+                    │
+                    ▼  cosine similarity vs every stored vector
+                    │
+            top matching rows  ← semantically similar, not keyword matched
+```
+
 ## Consequences
 
 **Good:**

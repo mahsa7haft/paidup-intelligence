@@ -4,12 +4,37 @@ Reference guide for running the four ingestion scripts that populate the vector 
 
 ---
 
+## Architecture: two separate databases
+
+PaidUp and paidup-intelligence use **separate Railway Postgres instances**:
+
+| Service | Purpose |
+|---------|---------|
+| `paidup-postgres` | PaidUp app tables (`analyses`, `donor_company_links`, `donor_tags`) |
+| `intelligence-postgres` | Vector tables (`interests_vectors`, `party_donations_vectors`, `votes_vectors`, `appg_vectors`) |
+
+The ingestion scripts use `intelligence-postgres`. Set `DATABASE_URL` to that instance's public URL in your local `.env`.
+
+---
+
+## Fresh database setup
+
+On a new `intelligence-postgres`, run the full schema before any ingestion:
+
+```bash
+psql "postgresql://..." -f docs/schema.sql
+```
+
+This creates all four vector tables, `ingest_runs`, and enables pgvector. **Do not run the IVFFlat index commands at the bottom of the file — those run after ingestion.**
+
+---
+
 ## Prerequisites
 
 Make sure your `.env` file exists with the right keys (copy from `.env.example`):
 
 ```
-DATABASE_URL=postgresql://...   ← Railway public URL for local runs
+DATABASE_URL=postgresql://...   ← intelligence-postgres public URL
 OPENAI_API_KEY=sk-...
 ```
 
@@ -146,6 +171,46 @@ Click **Deploy** or push to main. Railway will build the image with nixpacks. Th
 
 ---
 
-## After first data load — rebuild IVFFlat indexes
+## Building IVFFlat indexes after ingestion
 
-IVFFlat indexes must be rebuilt after the initial bulk load because centroids are learned from existing data (see [ADR 003](decisions/003-ivfflat-index.md)). Run the rebuild SQL from `schema-fixes.sql` once all four tables have data. Tracked in GitHub issue #15.
+IVFFlat indexes must be built after data is loaded — centroids are learned from real rows.
+See [ADR 003](decisions/003-ivfflat-index.md) and [ADR 011](decisions/011-disk-space-management.md).
+
+**Critical: check disk before each index build. Need 3× the table size free.**
+
+```sql
+SELECT pg_size_pretty(pg_database_size(current_database()));
+```
+
+Connect via psql (not Railway's browser console — it times out on long index builds):
+
+```bash
+psql "postgresql://..."
+```
+
+Run in this order — votes first while disk is emptiest:
+
+```sql
+SET maintenance_work_mem = '512MB';
+
+-- 1. Votes (~2-5 min, needs ~1.5 GB temp space)
+CREATE INDEX idx_votes_embedding_ivfflat
+  ON votes_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 200);
+
+-- Check disk before continuing
+SELECT pg_size_pretty(pg_database_size(current_database()));
+
+-- 2. Donations
+CREATE INDEX idx_party_donations_embedding_ivfflat
+  ON party_donations_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- 3. Interests
+CREATE INDEX idx_interests_embedding_ivfflat
+  ON interests_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- 4. APPGs
+CREATE INDEX idx_appg_embedding_ivfflat
+  ON appg_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+```
+
+> **Note:** votes uses `lists = 200` not 700 — safer disk usage, still good search quality on 5GB storage.

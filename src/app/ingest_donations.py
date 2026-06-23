@@ -257,6 +257,7 @@ def main() -> None:
         raise SystemExit("OPENAI_API_KEY not set")
 
     db_url = db_url.replace("postgres://", "postgresql://", 1)
+    run_log.check_disk_space(db_url)
     client = OpenAI()
 
     # Short-lived connection just for setup queries

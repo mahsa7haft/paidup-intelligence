@@ -20,6 +20,37 @@ def _connect(db_url: str):
     return psycopg2.connect(db_url)
 
 
+def check_disk_space(db_url: str, warn_pct: float = 0.80, abort_pct: float = 0.90) -> None:
+    """
+    Query current DB size against MAX_DB_BYTES from config.
+    Logs a warning at 80%, raises SystemExit at 90%. Call at the top of every main().
+    """
+    from app.config import MAX_DB_BYTES
+    try:
+        conn = _connect(db_url)
+        with conn.cursor() as cur:
+            cur.execute("SELECT pg_database_size(current_database())")
+            size_bytes = cur.fetchone()[0]
+        conn.close()
+        pct = size_bytes / MAX_DB_BYTES
+        size_pretty = f"{size_bytes / 1024 ** 3:.2f} GB"
+        limit_pretty = f"{MAX_DB_BYTES / 1024 ** 3:.1f} GB"
+        if pct >= abort_pct:
+            raise SystemExit(
+                f"ABORT: DB is {size_pretty} / {limit_pretty} ({pct:.0%}) — "
+                f"too full to run safely. Free space or upgrade storage first."
+            )
+        if pct >= warn_pct:
+            log.warning("Disk warning: DB is %s / %s (%.0f%% used) — approaching limit.",
+                        size_pretty, limit_pretty, pct * 100)
+        else:
+            log.info("Disk OK: %s / %s (%.0f%% used)", size_pretty, limit_pretty, pct * 100)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        log.warning("Could not check disk space: %s", exc)
+
+
 def start_run(db_url: str, script: str) -> int | None:
     """
     Insert a new row for this run and return its id.

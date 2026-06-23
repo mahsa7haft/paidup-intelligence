@@ -74,8 +74,20 @@ All four vector tables have IVFFlat cosine indexes. **Rebuild these after the fi
 | `REDIS_URL` | No | L1 query cache; Railway Redis plugin sets this |
 | `PORT` | No | Defaults to 5003; Railway sets this automatically |
 
+## Skills
+
+Reusable analysis methods that load when a task matches their description.
+
+| Skill | Path | Triggers on |
+|-------|------|-------------|
+| `conflict-of-interest-report` | `skills/conflict-of-interest-report/SKILL.md` | Who funds an MP, donor influence, conflicts of interest, vote alignment with donations |
+
+Each skill is self-contained and portable to Claude.ai. See `docs/decisions/012-analysis-as-skill.md`.
+
 ## Related
 
-- [PaidUp](../PaidUp) — shares the same Railway Postgres; `donor_company_links` and `donor_tags` tables used for metadata enrichment
-- Schema fixes: `docs/schema-fixes.sql`
+- [PaidUp](../PaidUp) — `donor_company_links` and `donor_tags` tables used for metadata enrichment
+- Fresh schema: `docs/schema.sql`
+- Incremental fixes: `docs/schema-fixes.sql`
 - Architecture decisions: `docs/decisions/`
+- Engineering maturity roadmap: `docs/engineering-maturity.md`

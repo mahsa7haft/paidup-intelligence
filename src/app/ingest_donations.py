@@ -175,6 +175,7 @@ def _load_enrichment(conn) -> tuple[dict, list]:
             cur.execute("SELECT name_pattern, tag, label FROM donor_tags")
             tag_rules = [{"pattern": r[0], "tag": r[1], "label": r[2]} for r in cur.fetchall()]
     except Exception as exc:
+        conn.rollback()
         log.warning("Could not load PaidUp enrichment tables: %s", exc)
     return company_map, tag_rules
 

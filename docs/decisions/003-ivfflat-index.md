@@ -54,6 +54,37 @@ lists sizing per table:
 
 HNSW is not used because the memory overhead is not justified at this scale on a shared Railway instance.
 
+### Index build disk overhead
+
+`CREATE INDEX` needs temporary disk space to sort and cluster vectors. The temp space
+required scales roughly with `lists`:
+
+```
+temp_space ≈ (table_size_on_disk × lists) / sqrt(row_count)
+
+Example — votes_vectors at 113,969 rows, ~700 MB on disk:
+
+  lists = 200  →  (700 MB × 200) / √113,969  ≈  700 MB  (safe on 5 GB)
+  lists = 336  →  (700 MB × 336) / √113,969  ≈ 1.2 GB   (safe on 5 GB, mathematically correct √113k ≈ 336)
+  lists = 700  →  (700 MB × 700) / √113,969  ≈ 2.5 GB   (crashed old DB at 3.5 GB used — no headroom)
+```
+
+Rule: before running `CREATE INDEX`, verify at least **3× the expected temp space** is free:
+
+```sql
+-- Check free space before building index
+SELECT
+  pg_size_pretty(pg_database_size(current_database())) AS used,
+  pg_size_pretty(4.5 * 1024^3 - pg_database_size(current_database())) AS approx_free;
+```
+
+**Post-incident note (June 2026):** The original `lists=700` for votes caused a disk-full
+PANIC on the old `intelligence-postgres` (3.5 GB used, build needed ~2.5 GB temp, 5 GB
+hard limit). Postgres could not write `postmaster.pid` and became unrecoverable.
+Solution: separate `intelligence-postgres` from PaidUp's Postgres, run votes ingestion
+first on an empty disk, build index with `lists=200` conservatively (search quality
+still acceptable at this row count). See ADR 011.
+
 ## Consequences
 
 **Good:**

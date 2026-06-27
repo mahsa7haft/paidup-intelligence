@@ -67,7 +67,8 @@ All four vector tables have IVFFlat cosine indexes. **Rebuild these after the fi
 
 | Variable | Required | Notes |
 |---|---|---|
-| `DATABASE_URL` | Yes | Railway Postgres — shared with PaidUp core |
+| `DATABASE_URL` | Yes | `intelligence-postgres` — vector tables |
+| `PAIDUP_DATABASE_URL` | No | `paidup-postgres` — enrichment tables (`donor_company_links`, `donor_tags`). Falls back to `DATABASE_URL` if not set. Use Railway internal URL inside Railway. |
 | `OPENAI_API_KEY` | Yes | For `text-embedding-3-small` embeddings |
 | `ANTHROPIC_API_KEY` | Yes (agent only) | Claude Sonnet for the LangGraph agent |
 | `THEYWORKFORYOU_API_KEY` | Yes (APPG ingestion) | Free at theyworkforyou.com/api/key |

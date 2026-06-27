@@ -21,6 +21,8 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from pgvector.psycopg2 import register_vector
 
+from app import run_log
+
 load_dotenv()
 
 MEMBERS_API  = "https://members-api.parliament.uk/api"
@@ -223,6 +225,7 @@ def main() -> None:
         )
 
     db_url = db_url.replace("postgres://", "postgresql://", 1)
+    run_log.check_disk_space(db_url)
     conn   = psycopg2.connect(db_url)
     register_vector(conn)
     client = OpenAI()
@@ -232,34 +235,41 @@ def main() -> None:
     log.info("Found %d current MPs.", len(mps))
 
     counts = {"embedded": 0, "skipped": 0, "no-appgs": 0, "error": 0}
+    run_id = run_log.start_run(db_url, "ingest_appgs")
+    try:
+        for i, mp in enumerate(mps, 1):
+            name = mp["nameDisplayAs"]
+            try:
+                result = _ingest_mp(conn, client, mp, twfy_key)
+                status = result["status"]
+                if status == "embedded":
+                    counts["embedded"] += result["embedded"]
+                    counts["skipped"]  += result["skipped"]
+                    log.info("[%3d/%d] embedded %-3d  skipped %-3d  %s",
+                             i, len(mps), result["embedded"], result["skipped"], name)
+                elif status == "skip":
+                    counts["skipped"] += result["count"]
+                    log.info("[%3d/%d] skip  (%d unchanged)  %s", i, len(mps), result["count"], name)
+                else:
+                    counts["no-appgs"] += 1
+                    log.info("[%3d/%d] no-appgs  %s", i, len(mps), name)
+            except Exception as exc:
+                counts["error"] += 1
+                log.error("[%3d/%d] ERROR %s: %s", i, len(mps), name, exc)
 
-    for i, mp in enumerate(mps, 1):
-        name = mp["nameDisplayAs"]
-        try:
-            result = _ingest_mp(conn, client, mp, twfy_key)
-            status = result["status"]
-            if status == "embedded":
-                counts["embedded"] += result["embedded"]
-                counts["skipped"]  += result["skipped"]
-                log.info("[%3d/%d] embedded %-3d  skipped %-3d  %s",
-                         i, len(mps), result["embedded"], result["skipped"], name)
-            elif status == "skip":
-                counts["skipped"] += result["count"]
-                log.info("[%3d/%d] skip  (%d unchanged)  %s", i, len(mps), result["count"], name)
-            else:
-                counts["no-appgs"] += 1
-                log.info("[%3d/%d] no-appgs  %s", i, len(mps), name)
-        except Exception as exc:
-            counts["error"] += 1
-            log.error("[%3d/%d] ERROR %s: %s", i, len(mps), name, exc)
+            run_log.update_run_progress(db_url, run_id, counts["embedded"], counts["skipped"], counts["error"])
+            time.sleep(0.5)  # TWFY rate limit is lenient but be polite
 
-        time.sleep(0.5)  # TWFY rate limit is lenient but be polite
-
-    conn.close()
-    log.info(
-        "\nDone. embedded=%d  skipped=%d  no-appgs=%d  errors=%d",
-        counts["embedded"], counts["skipped"], counts["no-appgs"], counts["error"],
-    )
+        conn.close()
+        log.info(
+            "\nDone. embedded=%d  skipped=%d  no-appgs=%d  errors=%d",
+            counts["embedded"], counts["skipped"], counts["no-appgs"], counts["error"],
+        )
+        run_log.finish_run(db_url, run_id, "success", counts["embedded"], counts["skipped"], counts["error"])
+    except Exception as exc:
+        conn.close()
+        run_log.finish_run(db_url, run_id, "error", counts["embedded"], counts["skipped"], counts["error"], notes=str(exc))
+        raise
 
 
 if __name__ == "__main__":

@@ -98,3 +98,22 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
 --
 -- CREATE INDEX idx_appg_embedding_ivfflat
 --   ON appg_vectors USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- ── Read-only role for the query / agent / MCP path ─────────────────────────────
+-- The /ask API and MCP search tools only ever need SELECT. Give them a role that
+-- physically cannot write or drop, so a bug, hallucinated query, or prompt
+-- injection through /ask can never modify or delete data.
+-- See ADR 013.
+--
+-- 1. Create the role and set a password (replace 'CHANGE_ME'):
+--    CREATE ROLE intelligence_ro LOGIN PASSWORD 'CHANGE_ME';
+--
+-- 2. Grant read-only access to current and future tables:
+--    GRANT CONNECT ON DATABASE railway TO intelligence_ro;
+--    GRANT USAGE ON SCHEMA public TO intelligence_ro;
+--    GRANT SELECT ON ALL TABLES IN SCHEMA public TO intelligence_ro;
+--    ALTER DEFAULT PRIVILEGES IN SCHEMA public
+--      GRANT SELECT ON TABLES TO intelligence_ro;
+--
+-- 3. Point the agent at this role via DATABASE_URL_READONLY (read-only connection
+--    string built from intelligence_ro). Ingestion keeps using DATABASE_URL (write).

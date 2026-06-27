@@ -61,11 +61,12 @@ class TestFinishRun:
             run_log.finish_run("postgresql://test", 42, "success",
                                embedded=1000, skipped=500, errors=0)
         args = mock_cur.execute.call_args[0][1]
-        assert args[1] == "success"
-        assert args[2] == 1000   # embedded
-        assert args[3] == 500    # skipped
-        assert args[4] == 0      # errors
-        assert args[6] == 42     # WHERE id = run_id
+        # args: (finished_at, last_updated_at, status, embedded, skipped, errors, notes, run_id)
+        assert args[2] == "success"
+        assert args[3] == 1000   # embedded
+        assert args[4] == 500    # skipped
+        assert args[5] == 0      # errors
+        assert args[7] == 42     # WHERE id = run_id
 
     def test_commits_and_closes_connection(self):
         mock_conn, _ = _mock_conn()
@@ -84,8 +85,9 @@ class TestFinishRun:
         with patch("app.run_log._connect", return_value=mock_conn):
             run_log.finish_run("postgresql://test", 5, "error", notes="disk full")
         args = mock_cur.execute.call_args[0][1]
-        assert args[1] == "error"
-        assert args[5] == "disk full"
+        # args: (finished_at, last_updated_at, status, embedded, skipped, errors, notes, run_id)
+        assert args[2] == "error"
+        assert args[6] == "disk full"
 
     def test_does_not_raise_when_db_unavailable(self):
         with patch("app.run_log._connect", side_effect=Exception("db error")):

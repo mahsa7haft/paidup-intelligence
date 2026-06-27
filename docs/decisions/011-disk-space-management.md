@@ -102,6 +102,28 @@ works and no crash risk. Add the index later when storage is upgraded.
 - `VACUUM` after large upsert runs can reclaim significant space — run it before
   index builds
 
+## Post-incident retrospective
+
+After the crash, we rebuilt from scratch on a separate `intelligence-postgres` and
+discovered the real row counts and sizes were much smaller than estimated:
+
+| Table | Estimated rows | Actual rows | Actual disk |
+|---|---|---|---|
+| votes_vectors | ~500,000 | 113,969 | ~739 MB |
+| interests_vectors | ~20,000 | 717 | ~1 MB |
+| party_donations_vectors | ~50,000 | TBD | TBD |
+| appg_vectors | ~5,000 | TBD | TBD |
+
+With actual row counts, the correct `lists` values (using `rows/1000` per pgvector docs)
+are far smaller than originally planned — votes needs `lists=114`, not 700. The index
+build with `lists=114` uses ~400 MB temp, well within the 5 GB limit.
+
+**The crash was avoidable without separating the databases.** Using the correct
+`lists` value from the start would have kept the build under 1 GB temp and the
+single Postgres would have been fine. The two-DB split is still the right
+architecture for isolation (a runaway ingestion job cannot affect PaidUp), but
+it was a response to a crash that the correct `lists` value would have prevented.
+
 ## Related
 
 - [[003-ivfflat-index]] — lists sizing and when to rebuild

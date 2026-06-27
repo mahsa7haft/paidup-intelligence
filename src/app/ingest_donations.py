@@ -175,6 +175,7 @@ def _load_enrichment(conn) -> tuple[dict, list]:
             cur.execute("SELECT name_pattern, tag, label FROM donor_tags")
             tag_rules = [{"pattern": r[0], "tag": r[1], "label": r[2]} for r in cur.fetchall()]
     except Exception as exc:
+        conn.rollback()
         log.warning("Could not load PaidUp enrichment tables: %s", exc)
     return company_map, tag_rules
 
@@ -260,10 +261,14 @@ def main() -> None:
     run_log.check_disk_space(db_url)
     client = OpenAI()
 
-    # Short-lived connection just for setup queries
+    paidup_url = os.environ.get("PAIDUP_DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
+    enrich_url = paidup_url or db_url
+    enrich_conn = _connect(enrich_url)
+    log.info("Loading PaidUp enrichment data%s…", "" if paidup_url else " (PAIDUP_DATABASE_URL not set, trying local)")
+    company_map, tag_rules = _load_enrichment(enrich_conn)
+    enrich_conn.close()
+
     conn = _connect(db_url)
-    log.info("Loading PaidUp enrichment data…")
-    company_map, tag_rules = _load_enrichment(conn)
     log.info("Fetching existing hashes…")
     with conn.cursor() as cur:
         existing = _fetch_existing_hashes(cur)

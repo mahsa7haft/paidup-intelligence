@@ -1,0 +1,36 @@
+# Local development stack for paidup-intelligence.
+# Brings up a Postgres instance with pgvector preinstalled, seeded from docs/schema.sql.
+#
+#   docker compose up -d      # start in background
+#   docker compose logs -f db # watch logs
+#   docker compose down       # stop (keeps data)
+#   docker compose down -v    # stop AND wipe the data volume
+
+services:
+  db:
+    # pgvector ships an official image: Postgres 16 with the vector extension built in.
+    image: pgvector/pgvector:pg16
+    container_name: intelligence-db
+    environment:
+      POSTGRES_USER: intelligence
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: intelligence
+    ports:
+      # host:container — connect from your machine at localhost:5433
+      # (5433 not 5432, so it won't clash with any Postgres already on your host)
+      - "5433:5432"
+    volumes:
+      # 1. Named volume — persists table data across `docker compose down`
+      - intelligence_pgdata:/var/lib/postgresql/data
+      # 2. Seed: any .sql in this dir runs ONCE, on first init of an empty data volume.
+      #    Mounted read-only (:ro) so the container can't modify our schema file.
+      - ./docs/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      # Lets other services wait until Postgres is actually ready, not just started.
+      test: ["CMD-SHELL", "pg_isready -U intelligence -d intelligence"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  intelligence_pgdata:

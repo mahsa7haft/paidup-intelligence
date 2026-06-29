@@ -50,8 +50,13 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-def build_agent():
-    """Compile the LangGraph agent. Call once and reuse."""
+def build_agent(checkpointer=None):
+    """Compile the LangGraph agent. Call once and reuse.
+
+    Pass a checkpointer (e.g. MemorySaver) to make the agent conversational: state is
+    persisted per thread_id, so each invoke with the same thread_id resumes the prior
+    conversation. Without one, each invoke is a fresh single-shot call.
+    """
     llm = ChatAnthropic(model=AGENT_MODEL, temperature=0)
     llm_with_tools = llm.bind_tools(TOOLS)
 
@@ -69,7 +74,7 @@ def build_agent():
     graph.add_conditional_edges("think", tools_condition)
     graph.add_edge("tools", "think")           # feed tool results back to think
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def ask(question: str) -> str:

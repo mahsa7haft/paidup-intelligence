@@ -67,7 +67,8 @@ All four vector tables have IVFFlat cosine indexes. **Rebuild these after the fi
 
 | Variable | Required | Notes |
 |---|---|---|
-| `DATABASE_URL` | Yes | `intelligence-postgres` — vector tables |
+| `DATABASE_URL` | Yes | `intelligence-postgres` — vector tables. Write role; used by ingestion. |
+| `DATABASE_URL_READONLY` | No | Read-only role (`intelligence_ro`) for the agent / MCP / `/ask` path. Falls back to `DATABASE_URL` if unset. See `docs/security-roles.sql` and ADR 013. |
 | `PAIDUP_DATABASE_URL` | No | `paidup-postgres` — enrichment tables (`donor_company_links`, `donor_tags`). Falls back to `DATABASE_URL` if not set. Use Railway internal URL inside Railway. |
 | `OPENAI_API_KEY` | Yes | For `text-embedding-3-small` embeddings |
 | `ANTHROPIC_API_KEY` | Yes (agent only) | Claude Sonnet for the LangGraph agent |

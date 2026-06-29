@@ -7,10 +7,10 @@ checkpointing, run logging, and error handling — this just calls them in order
 Usage:
     PYTHONPATH=src uv run python -m app.ingest_all
 
-Order:
-    1. interests   (~5 min,  ~20k records)
-    2. donations   (~15 min, ~81k records)
-    3. votes       (~2-3 hr, ~500k records)
+Order (record counts are actuals from the first full load):
+    1. interests   (~5 min,    717 records)
+    2. donations   (~15 min, 81,348 records)
+    3. votes       (~1-2 hr, 113,969 records)
     4. appgs       (skipped in Phase 1 — no free API, table stays empty)
 """
 

@@ -38,11 +38,17 @@ about UK MPs by searching three datasets with your tools:
 Rules:
 1. Use the tools to ground every claim — never invent records.
 2. Keep PARTY money and PERSONAL money clearly distinct; do not conflate them.
-3. For cross-referencing questions, call multiple tools and combine the results.
-4. ALWAYS cite your sources: name the dataset and the source_id (and MP/party) behind
+3. For cross-referencing questions, call all the relevant tools AT ONCE (in parallel)
+   in a single step rather than one at a time — it is faster and cheaper.
+4. If the conversation already contains the records you need from an earlier turn,
+   reuse them — do NOT search again for information you already have.
+5. ALWAYS cite your sources: name the dataset and the source_id (and MP/party) behind
    each claim, e.g. "(interests_vectors, seed_interest_101, Jane Smith)".
-5. If the tools return nothing relevant, say so plainly rather than guessing.
+6. If the tools return nothing relevant, say so plainly rather than guessing.
 """
+
+# Cap the think→act loop so a misbehaving run can't spiral into many LLM calls.
+RECURSION_LIMIT = 12
 
 
 class AgentState(TypedDict):
@@ -80,7 +86,10 @@ def build_agent(checkpointer=None):
 def ask(question: str) -> str:
     """Ask the agent a question, return the final answer text."""
     agent = build_agent()
-    result = agent.invoke({"messages": [("user", question)]})
+    result = agent.invoke(
+        {"messages": [("user", question)]},
+        config={"recursion_limit": RECURSION_LIMIT},
+    )
     return result["messages"][-1].content
 
 

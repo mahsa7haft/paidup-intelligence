@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
     notes           TEXT        NOT NULL DEFAULT ''
 );
 
+-- Note: the agent answer cache is L1-only (Redis), so there is no query_cache table.
+-- See ADR 016 for why semantic (L2) caching is not used in this domain.
+
 -- ── IVFFlat indexes ────────────────────────────────────────────────────────────
 -- DO NOT run these on an empty database.
 -- Build indexes AFTER ingestion is complete — centroids are learned from real data.

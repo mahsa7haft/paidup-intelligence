@@ -114,6 +114,56 @@ Embedding model: `text-embedding-3-small` (OpenAI).
 
 ---
 
+## Running locally
+
+You need [Docker](https://www.docker.com/products/docker-desktop/) and
+[uv](https://github.com/astral-sh/uv) installed.
+
+**1. Start a local Postgres + pgvector** (seeded automatically from `docs/schema.sql`):
+
+```bash
+docker compose up -d          # start in background
+docker compose ps             # confirm STATUS = running (healthy)
+```
+
+This exposes the database on host port **5433** (not 5432, to avoid clashing with any
+local Postgres). Tables are created on first boot but start empty.
+
+**2. Point your `.env` at it** (copy from `.env.example` and set):
+
+```
+DATABASE_URL=postgresql://intelligence:localdev@localhost:5433/intelligence
+OPENAI_API_KEY=sk-...
+```
+
+**3. Connect with psql** to poke around:
+
+```bash
+psql "postgresql://intelligence:localdev@localhost:5433/intelligence"
+# then \dt to list tables
+```
+
+**4. Install deps and run things:**
+
+```bash
+uv sync                                            # install dependencies
+uv run pytest                                      # run the test suite
+PYTHONPATH=src uv run python -m app.ingest_interests   # run an ingestion script
+```
+
+**Stopping:**
+
+```bash
+docker compose down            # stop (data persists in the volume)
+docker compose down -v         # stop AND wipe the data (fresh start)
+```
+
+> The local database starts empty. For development, insert a few rows for testing
+> rather than re-ingesting the full datasets. See [docs/how-to-run.md](docs/how-to-run.md)
+> for full details. The API / MCP server is in active development.
+
+---
+
 ## Build order
 
 1. Enable pgvector on Railway Postgres — [#1](https://github.com/mahsa7haft/paidup-intelligence/issues/1)

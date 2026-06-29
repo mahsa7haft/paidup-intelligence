@@ -17,7 +17,38 @@ The ingestion scripts use `intelligence-postgres`. Set `DATABASE_URL` to that in
 
 ---
 
-## Fresh database setup
+## Local development with Docker
+
+For local work you don't need Railway — `docker-compose.yml` brings up a local
+Postgres with pgvector, seeded automatically from `docs/schema.sql`:
+
+```bash
+docker compose up -d            # start the db (Postgres 16 + pgvector) in the background
+docker compose ps               # confirm STATUS = running (healthy)
+docker compose logs -f db       # watch logs
+docker compose down             # stop (data persists in the named volume)
+docker compose down -v          # stop AND wipe the data volume (fresh start)
+```
+
+Connect from your host (note port **5433** to avoid clashing with any local Postgres):
+
+```bash
+psql "postgresql://intelligence:localdev@localhost:5433/intelligence"
+```
+
+Point your local `.env` at it for development:
+
+```
+DATABASE_URL=postgresql://intelligence:localdev@localhost:5433/intelligence
+```
+
+The tables are created automatically on first boot (the seed runs once, when the data
+volume is empty), but they start **empty** — insert a few rows for testing rather than
+re-ingesting the full datasets locally.
+
+---
+
+## Fresh database setup (Railway / production)
 
 On a new `intelligence-postgres`, run the full schema before any ingestion:
 

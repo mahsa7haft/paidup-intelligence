@@ -76,15 +76,8 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
     notes           TEXT        NOT NULL DEFAULT ''
 );
 
--- ── Query cache (L2 semantic cache for agent answers) ────────────────────────────
-
-CREATE TABLE IF NOT EXISTS query_cache (
-    id         SERIAL      PRIMARY KEY,
-    question   TEXT        NOT NULL,
-    embedding  VECTOR(1536),
-    answer     TEXT        NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+-- Note: the agent answer cache is L1-only (Redis), so there is no query_cache table.
+-- See ADR 016 for why semantic (L2) caching is not used in this domain.
 
 -- ── IVFFlat indexes ────────────────────────────────────────────────────────────
 -- DO NOT run these on an empty database.

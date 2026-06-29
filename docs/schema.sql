@@ -76,6 +76,16 @@ CREATE TABLE IF NOT EXISTS ingest_runs (
     notes           TEXT        NOT NULL DEFAULT ''
 );
 
+-- ── Query cache (L2 semantic cache for agent answers) ────────────────────────────
+
+CREATE TABLE IF NOT EXISTS query_cache (
+    id         SERIAL      PRIMARY KEY,
+    question   TEXT        NOT NULL,
+    embedding  VECTOR(1536),
+    answer     TEXT        NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- ── IVFFlat indexes ────────────────────────────────────────────────────────────
 -- DO NOT run these on an empty database.
 -- Build indexes AFTER ingestion is complete — centroids are learned from real data.

@@ -32,5 +32,18 @@ services:
       timeout: 3s
       retries: 5
 
+  redis:
+    # L1 query cache. Prebuilt image — like the db, we don't build this.
+    image: redis:7
+    container_name: intelligence-redis
+    ports:
+      # host:container — connect from your machine at localhost:6379
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
 volumes:
   intelligence_pgdata:

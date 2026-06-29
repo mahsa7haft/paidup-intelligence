@@ -19,7 +19,8 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from langgraph.checkpoint.memory import MemorySaver
 
-from app.agent import build_agent
+from app import cache
+from app.agent import RECURSION_LIMIT, build_agent
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -57,14 +58,26 @@ def ask_route():
     question = (data.get("question") or "").strip()
     if not question:
         return jsonify({"error": "question is required"}), 400
-    # A thread_id labels the conversation; reuse it across turns to keep memory.
-    thread_id = data.get("thread_id") or str(uuid.uuid4())
+
+    incoming_thread = data.get("thread_id")
+    # Only first-turn questions are cacheable — follow-ups depend on conversation
+    # context, so a text-keyed cache would serve wrong answers.
+    is_first_turn = not incoming_thread
+    if is_first_turn:
+        cached, layer = cache.lookup(question)
+        if cached is not None:
+            log.info("Cache hit (%s)", layer)
+            return jsonify({"answer": cached, "thread_id": str(uuid.uuid4()), "cached": layer})
+
+    thread_id = incoming_thread or str(uuid.uuid4())
     try:
         result = get_agent().invoke(
             {"messages": [("user", question)]},
-            config={"configurable": {"thread_id": thread_id}},
+            config={"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT},
         )
         answer = result["messages"][-1].content
+        if is_first_turn:
+            cache.store(question, answer)
         return jsonify({"answer": answer, "thread_id": thread_id})
     except Exception as exc:
         log.exception("Agent failed")

@@ -37,16 +37,32 @@ SAMPLES = [
     (105, "Carol Green", "Donation",     "MP Carol Green (Green Party) received £2,000 from a community wind farm cooperative supporting clean energy."),
 ]
 
+# Party donations (Electoral Commission style) — party money, not personal.
+SAMPLE_DONATIONS = [
+    ("Labour",       "Green Energy Ltd",  50000, "2024-01-15", "The Labour Party received £50,000 from Green Energy Ltd, a renewable energy company."),
+    ("Conservative", "British Petroleum", 100000, "2024-02-01", "The Conservative Party received £100,000 from British Petroleum, an oil and gas company."),
+    ("Green Party",  "Wind Farm Co-op",   10000, "2024-03-01", "The Green Party received £10,000 from a community wind farm cooperative supporting clean energy."),
+]
+
+# Voting records.
+SAMPLE_VOTES = [
+    (101, "Jane Smith",  "Aye", "2024-04-01", "MP Jane Smith (Labour) voted Aye in favour of the Renewable Energy Investment Bill."),
+    (102, "John Doe",    "No",  "2024-04-01", "MP John Doe (Conservative) voted No against the Renewable Energy Investment Bill."),
+    (105, "Carol Green", "Aye", "2024-05-01", "MP Carol Green (Green Party) voted Aye in favour of declaring a Climate Emergency."),
+]
+
+
+def _hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
 
 def main() -> None:
     conn = psycopg2.connect(LOCAL_URL)
     register_vector(conn)
-    inserted = 0
     with conn.cursor() as cur:
+        # interests
         for mp_id, mp_name, category, content in SAMPLES:
             source_id = f"seed_interest_{mp_id}"
-            embedding = embed_query(content)
-            content_hash = hashlib.sha256(content.encode()).hexdigest()
             cur.execute(
                 """
                 INSERT INTO interests_vectors
@@ -55,13 +71,46 @@ def main() -> None:
                 ON CONFLICT (source_id) DO UPDATE SET
                     content = EXCLUDED.content, embedding = EXCLUDED.embedding
                 """,
-                (source_id, mp_id, mp_name, category, content, json.dumps({}), embedding, content_hash),
+                (source_id, mp_id, mp_name, category, content, json.dumps({}),
+                 embed_query(content), _hash(content)),
             )
-            inserted += 1
-            print(f"  seeded {source_id}: {mp_name} ({category})")
+            print(f"  interest  {source_id}: {mp_name}")
+
+        # party donations
+        for i, (party, donor, amount, date, content) in enumerate(SAMPLE_DONATIONS, 1):
+            source_id = f"seed_donation_{i}"
+            cur.execute(
+                """
+                INSERT INTO party_donations_vectors
+                    (source_id, party_name, donor_name, amount, donation_date, content, metadata, embedding, content_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source_id) DO UPDATE SET
+                    content = EXCLUDED.content, embedding = EXCLUDED.embedding
+                """,
+                (source_id, party, donor, amount, date, content, json.dumps({}),
+                 embed_query(content), _hash(content)),
+            )
+            print(f"  donation  {source_id}: {party} <- {donor}")
+
+        # votes
+        for mp_id, mp_name, vote, date, content in SAMPLE_VOTES:
+            source_id = f"seed_vote_{mp_id}_{date}"
+            cur.execute(
+                """
+                INSERT INTO votes_vectors
+                    (source_id, mp_id, mp_name, vote, vote_date, content, metadata, embedding, content_hash)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source_id) DO UPDATE SET
+                    content = EXCLUDED.content, embedding = EXCLUDED.embedding
+                """,
+                (source_id, mp_id, mp_name, vote, date, content, json.dumps({}),
+                 embed_query(content), _hash(content)),
+            )
+            print(f"  vote      {source_id}: {mp_name} {vote}")
+
     conn.commit()
     conn.close()
-    print(f"\nDone. {inserted} interest records in the local DB.")
+    print("\nDone. Seeded interests + party donations + votes into the local DB.")
 
 
 if __name__ == "__main__":

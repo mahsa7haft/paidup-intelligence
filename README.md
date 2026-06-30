@@ -49,16 +49,16 @@ A companion service to [PaidUp](https://github.com/mahsa7haft/paidup), which sur
 └─────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────┐
-│                  AGENT LAYER                         │
-│  LangGraph — same pattern as Beaufort                │
-│                                                      │
+│                  AGENT LAYER                        │
+│                    LangGraph                        │
+│                                                     │
 │  START → think → tool? → execute → think → answer   │
 └─────────────────────────────────────────────────────┘
                           ↓
 ┌─────────────────────────────────────────────────────┐
-│              /ask  (PaidUp Core)                     │
-│  Natural language question → streamed answer         │
-│  with citations linking back to PaidUp MP pages      │
+│              /ask  (PaidUp Core)                    │
+│  Natural language question → streamed answer        │
+│  with citations linking back to PaidUp MP pages     │
 └─────────────────────────────────────────────────────┘
 ```
 

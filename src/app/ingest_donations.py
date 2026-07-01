@@ -7,54 +7,29 @@ Usage:
 Fetches all political party donations from the Electoral Commission API,
 embeds each record, and upserts into party_donations_vectors. Only calls
 the OpenAI API for records whose content has changed since the last run.
+
+Unlike the per-MP scripts, this iterates EC API pages, so it implements its
+own ingest() loop on top of the shared pipeline scaffolding.
 """
 
-import hashlib
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime, timezone
 
-import psycopg2
-import psycopg2.extras
 import requests
-from dotenv import load_dotenv
 from openai import OpenAI
-from pgvector.psycopg2 import register_vector
 
-from app.config import EC_API, EMBED_BATCH, EMBED_MODEL, FETCH_ROWS
 from app import run_log
+from app.config import EC_API, FETCH_ROWS
+from app.ingest_common import (
+    Checkpoint, IngestionPipeline, PreparedRecord, company_and_tags, connect,
+    embed_texts, fetch_existing_hashes, load_enrichment, sha256, upsert,
+)
 
-load_dotenv()
-CHECKPOINT_FILE = ".ingest_donations_checkpoint.json"
-
-
-def _load_checkpoint() -> int:
-    try:
-        with open(CHECKPOINT_FILE) as f:
-            return json.load(f).get("start", 0)
-    except (FileNotFoundError, ValueError):
-        return 0
-
-
-def _save_checkpoint(start: int) -> None:
-    with open(CHECKPOINT_FILE, "w") as f:
-        json.dump({"start": start}, f)
-
-
-def _clear_checkpoint() -> None:
-    try:
-        os.remove(CHECKPOINT_FILE)
-    except FileNotFoundError:
-        pass
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-
-# ── Electoral Commission API ───────────────────────────────────────────────────
 
 def _parse_ms_date(value: str | None) -> str:
     """Convert /Date(1234567890000)/ to YYYY-MM-DD. Returns '' on failure."""
@@ -82,47 +57,6 @@ def _fetch_page(params: dict, attempt: int = 0) -> dict:
         return _fetch_page(params, attempt + 1)
 
 
-def _donation_pages():
-    """
-    Generator — yields (records, start_offset) one page at a time.
-    Resumes from the saved checkpoint so re-runs skip already-processed pages.
-    Caller saves checkpoint AFTER a successful upsert using the yielded offset.
-    """
-    resume_at = _load_checkpoint()
-    if resume_at:
-        log.info("Resuming from EC API offset %d (delete %s to start over)",
-                 resume_at, CHECKPOINT_FILE)
-
-    params = {
-        "query":                   "",
-        "sort":                    "AcceptedDate",
-        "order":                   "desc",
-        "et":                      "pp",
-        "date":                    "All",
-        "register":                ["gb", "ni"],
-        "isIrishSourceYes":        "true",
-        "isIrishSourceNo":         "true",
-        "includeOutsideSection75": "true",
-        "rows":                    FETCH_ROWS,
-        "start":                   resume_at,
-    }
-
-    fetched, total = resume_at, None
-    while True:
-        data    = _fetch_page(params)
-        total   = total or data.get("Total", 0)
-        results = data.get("Result", [])
-        if not results:
-            break
-        fetched += len(results)
-        log.info("  fetched %d / %d", fetched, total)
-        yield [r for raw in results if (r := _parse_record(raw))], params["start"]
-        if fetched >= total:
-            break
-        params["start"] += FETCH_ROWS
-        time.sleep(0.3)
-
-
 def _parse_record(raw: dict) -> dict | None:
     ec_ref = (raw.get("ECRef") or "").strip()
     party  = (raw.get("RegulatedEntityName") or "").strip()
@@ -147,8 +81,6 @@ def _parse_record(raw: dict) -> dict | None:
     }
 
 
-# ── Content + hash ─────────────────────────────────────────────────────────────
-
 def _build_content(record: dict) -> str:
     amount = f"£{record['value']:,.0f}" if record["value"] else "an unspecified amount"
     date   = record["date"] or "unknown date"
@@ -159,35 +91,7 @@ def _build_content(record: dict) -> str:
     )
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-# ── Metadata enrichment ────────────────────────────────────────────────────────
-
-def _load_enrichment(conn) -> tuple[dict, list]:
-    company_map, tag_rules = {}, []
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT donor_name, company_name, logo_domain FROM donor_company_links")
-            for row in cur.fetchall():
-                company_map[row[0].lower()] = {"company_name": row[1], "logo_domain": row[2]}
-            cur.execute("SELECT name_pattern, tag, label FROM donor_tags")
-            tag_rules = [{"pattern": r[0], "tag": r[1], "label": r[2]} for r in cur.fetchall()]
-    except Exception as exc:
-        conn.rollback()
-        log.warning("Could not load PaidUp enrichment tables: %s", exc)
-    return company_map, tag_rules
-
-
 def _build_metadata(record: dict, company_map: dict, tag_rules: list) -> dict:
-    donor_lower = record["donor"].lower()
-    company = company_map.get(donor_lower, {})
-    tags = [
-        {"tag": r["tag"], "label": r["label"]}
-        for r in tag_rules
-        if r["pattern"] in donor_lower
-    ]
     return {
         "ec_ref":       record["ec_ref"],
         "dtype":        record["dtype"],
@@ -198,136 +102,116 @@ def _build_metadata(record: dict, company_map: dict, tag_rules: list) -> dict:
         "is_irish":     record["is_irish"],
         "account_unit": record["account_unit"],
         "period":       record["period"],
-        "company_name": company.get("company_name"),
-        "logo_domain":  company.get("logo_domain"),
-        "tags":         tags,
+        **company_and_tags(record["donor"], company_map, tag_rules),
     }
 
 
-# ── Embeddings ─────────────────────────────────────────────────────────────────
+class DonationsIngestion(IngestionPipeline):
+    script_name = "ingest_donations"
+    checkpoint  = Checkpoint(".ingest_donations_checkpoint.json", "start")
+    table       = "party_donations_vectors"
+    columns     = ["source_id", "party_name", "donor_name", "amount", "donation_date",
+                   "content", "metadata", "embedding", "content_hash"]
 
-def _embed_batch(client: OpenAI, texts: list[str]) -> list[list[float]]:
-    response = client.embeddings.create(model=EMBED_MODEL, input=texts)
-    return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
+    def setup(self) -> None:
+        self.company_map, self.tag_rules = load_enrichment()
 
+    def ingest(self, db_url: str, client: OpenAI, run_id: int | None) -> None:
+        conn = connect(db_url)
+        try:
+            log.info("Fetching existing hashes…")
+            with conn.cursor() as cur:
+                existing = fetch_existing_hashes(cur, self.table)
+            log.info("  %d records already in DB.", len(existing))
 
-# ── Database ───────────────────────────────────────────────────────────────────
+            log.info("Fetching and embedding EC donations page by page…")
+            for page_records, page_start in self._donation_pages():
+                prepared = []
+                for record in page_records:
+                    content = _build_content(record)
+                    prepared.append(PreparedRecord(
+                        source_id=f"donation_{record['ec_ref']}",
+                        content=content,
+                        content_hash=sha256(content),
+                        record=record,
+                    ))
 
-def _fetch_existing_hashes(cur) -> dict[str, str]:
-    cur.execute("SELECT source_id, content_hash FROM party_donations_vectors")
-    return {row[0]: row[1] for row in cur.fetchall()}
+                to_embed = [p for p in prepared if existing.get(p.source_id) != p.content_hash]
+                self.counts["skipped"] += len(prepared) - len(to_embed)
 
+                if to_embed:
+                    embeddings = embed_texts(client, [p.content for p in to_embed])
+                    rows = [
+                        {
+                            "source_id":     p.source_id,
+                            "party_name":    p.record["party"],
+                            "donor_name":    p.record["donor"],
+                            "amount":        p.record["value"],
+                            "donation_date": p.record["date"] or None,
+                            "content":       p.content,
+                            "metadata":      json.dumps(_build_metadata(
+                                                 p.record, self.company_map, self.tag_rules)),
+                            "embedding":     embedding,
+                            "content_hash":  p.content_hash,
+                        }
+                        for p, embedding in zip(to_embed, embeddings)
+                    ]
+                    with conn.cursor() as cur:
+                        upsert(cur, self.table, self.columns, rows)
+                    conn.commit()
+                    self.counts["embedded"] += len(rows)
+                    log.info("  embedded %d this page  |  total embedded=%d  skipped=%d",
+                             len(rows), self.counts["embedded"], self.counts["skipped"])
 
-def _upsert(cur, rows: list[dict]) -> None:
-    psycopg2.extras.execute_batch(
-        cur,
+                self.checkpoint.save(page_start)
+                run_log.update_run_progress(db_url, run_id,
+                                            self.counts["embedded"], self.counts["skipped"])
+        finally:
+            conn.close()
+
+    def _donation_pages(self):
         """
-        INSERT INTO party_donations_vectors
-            (source_id, party_name, donor_name, amount, donation_date,
-             content, metadata, embedding, content_hash)
-        VALUES
-            (%(source_id)s, %(party_name)s, %(donor_name)s, %(amount)s, %(donation_date)s,
-             %(content)s, %(metadata)s, %(embedding)s, %(content_hash)s)
-        ON CONFLICT (source_id) DO UPDATE SET
-            party_name    = EXCLUDED.party_name,
-            donor_name    = EXCLUDED.donor_name,
-            amount        = EXCLUDED.amount,
-            donation_date = EXCLUDED.donation_date,
-            content       = EXCLUDED.content,
-            metadata      = EXCLUDED.metadata,
-            embedding     = EXCLUDED.embedding,
-            content_hash  = EXCLUDED.content_hash
-        """,
-        rows,
-    )
+        Generator — yields (records, start_offset) one page at a time.
+        Resumes from the saved checkpoint so re-runs skip already-processed pages.
+        Caller saves the checkpoint AFTER a successful upsert using the yielded offset.
+        """
+        resume_at = self.checkpoint.load()
+        if resume_at:
+            log.info("Resuming from EC API offset %d (delete %s to start over)",
+                     resume_at, self.checkpoint.path)
 
+        params = {
+            "query":                   "",
+            "sort":                    "AcceptedDate",
+            "order":                   "desc",
+            "et":                      "pp",
+            "date":                    "All",
+            "register":                ["gb", "ni"],
+            "isIrishSourceYes":        "true",
+            "isIrishSourceNo":         "true",
+            "includeOutsideSection75": "true",
+            "rows":                    FETCH_ROWS,
+            "start":                   resume_at,
+        }
 
-# ── Main ───────────────────────────────────────────────────────────────────────
-
-def _connect(db_url: str):
-    conn = psycopg2.connect(db_url)
-    register_vector(conn)
-    return conn
+        fetched, total = resume_at, None
+        while True:
+            data    = _fetch_page(params)
+            total   = total or data.get("Total", 0)
+            results = data.get("Result", [])
+            if not results:
+                break
+            fetched += len(results)
+            log.info("  fetched %d / %d", fetched, total)
+            yield [r for raw in results if (r := _parse_record(raw))], params["start"]
+            if fetched >= total:
+                break
+            params["start"] += FETCH_ROWS
+            time.sleep(0.3)
 
 
 def main() -> None:
-    db_url = os.environ.get("DATABASE_URL", "")
-    if not db_url:
-        raise SystemExit("DATABASE_URL not set")
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY not set")
-
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-    run_log.check_disk_space(db_url)
-    client = OpenAI()
-
-    paidup_url = os.environ.get("PAIDUP_DATABASE_URL", "").replace("postgres://", "postgresql://", 1)
-    enrich_url = paidup_url or db_url
-    enrich_conn = _connect(enrich_url)
-    log.info("Loading PaidUp enrichment data%s…", "" if paidup_url else " (PAIDUP_DATABASE_URL not set, trying local)")
-    company_map, tag_rules = _load_enrichment(enrich_conn)
-    enrich_conn.close()
-
-    conn = _connect(db_url)
-    log.info("Fetching existing hashes…")
-    with conn.cursor() as cur:
-        existing = _fetch_existing_hashes(cur)
-    conn.close()
-    log.info("  %d records already in DB.", len(existing))
-
-    total_embedded, total_skipped = 0, 0
-    run_id = run_log.start_run(db_url, "ingest_donations")
-    try:
-        log.info("Fetching and embedding EC donations page by page…")
-
-        for page_records, page_start in _donation_pages():
-            to_embed = []
-            for record in page_records:
-                source_id    = f"donation_{record['ec_ref']}"
-                content      = _build_content(record)
-                content_hash = _sha256(content)
-                record["_source_id"]    = source_id
-                record["_content"]      = content
-                record["_content_hash"] = content_hash
-                if existing.get(source_id) != content_hash:
-                    to_embed.append(record)
-
-            total_skipped += len(page_records) - len(to_embed)
-
-            if to_embed:
-                embeddings = _embed_batch(client, [r["_content"] for r in to_embed])
-                rows = []
-                for record, embedding in zip(to_embed, embeddings):
-                    rows.append({
-                        "source_id":     record["_source_id"],
-                        "party_name":    record["party"],
-                        "donor_name":    record["donor"],
-                        "amount":        record["value"],
-                        "donation_date": record["date"] or None,
-                        "content":       record["_content"],
-                        "metadata":      json.dumps(_build_metadata(record, company_map, tag_rules)),
-                        "embedding":     embedding,
-                        "content_hash":  record["_content_hash"],
-                    })
-
-                conn = _connect(db_url)
-                with conn.cursor() as cur:
-                    _upsert(cur, rows)
-                conn.commit()
-                conn.close()
-                total_embedded += len(rows)
-                log.info("  embedded %d this page  |  total embedded=%d  skipped=%d",
-                         len(rows), total_embedded, total_skipped)
-
-            _save_checkpoint(page_start)
-            run_log.update_run_progress(db_url, run_id, total_embedded, total_skipped)
-
-        _clear_checkpoint()
-        log.info("\nDone. embedded=%d  skipped=%d", total_embedded, total_skipped)
-        run_log.finish_run(db_url, run_id, "success", total_embedded, total_skipped)
-    except Exception as exc:
-        run_log.finish_run(db_url, run_id, "error", total_embedded, total_skipped, notes=str(exc))
-        raise
+    DonationsIngestion().run()
 
 
 if __name__ == "__main__":

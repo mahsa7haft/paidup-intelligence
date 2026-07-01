@@ -8,55 +8,17 @@ Requires THEYWORKFORYOU_API_KEY — free at https://www.theyworkforyou.com/api/k
 Uses getMPInfo for each MP and extracts current APPG roles from the office array.
 """
 
-import hashlib
-import json
 import logging
 import os
-import time
 
-import psycopg2
-import psycopg2.extras
 import requests
-from dotenv import load_dotenv
-from openai import OpenAI
-from pgvector.psycopg2 import register_vector
 
-from app import run_log
+from app.ingest_common import Checkpoint, MPIngestionPipeline, sha256
 
-load_dotenv()
+TWFY_API = "https://www.theyworkforyou.com/api"
 
-MEMBERS_API  = "https://members-api.parliament.uk/api"
-TWFY_API     = "https://www.theyworkforyou.com/api"
-EMBED_MODEL  = "text-embedding-3-small"
-EMBED_BATCH  = 100
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-
-# ── Parliament API ─────────────────────────────────────────────────────────────
-
-def _all_mps() -> list[dict]:
-    mps, skip = [], 0
-    while True:
-        r = requests.get(
-            f"{MEMBERS_API}/Members/Search",
-            params={"House": 1, "IsCurrentMember": "true", "take": 100, "skip": skip},
-            timeout=10,
-        )
-        r.raise_for_status()
-        data  = r.json()
-        items = data.get("items", [])
-        if not items:
-            break
-        mps.extend(m["value"] for m in items)
-        skip += 100
-        if skip >= data.get("totalResults", 0):
-            break
-    return mps
-
-
-# ── TheyWorkForYou API ─────────────────────────────────────────────────────────
 
 def _get_appg_roles(name: str, key: str) -> list[dict]:
     """
@@ -102,8 +64,6 @@ def _get_appg_roles(name: str, key: str) -> list[dict]:
         return []
 
 
-# ── Content + hash ─────────────────────────────────────────────────────────────
-
 def _build_content(name: str, party: str, role: dict) -> str:
     return (
         f"MP {name} ({party}) is a {role['role']} of the "
@@ -111,165 +71,41 @@ def _build_content(name: str, party: str, role: dict) -> str:
     )
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()
+class AppgIngestion(MPIngestionPipeline):
+    script_name   = "ingest_appgs"
+    checkpoint    = Checkpoint(".ingest_appgs_checkpoint.json", "mp_index")
+    table         = "appg_vectors"
+    columns       = ["source_id", "mp_id", "mp_name", "appg_name", "role",
+                     "content", "metadata", "embedding", "content_hash"]
+    empty_status  = "no-appgs"
+    sleep_seconds = 0.5  # TWFY rate limit is lenient but be polite
 
+    def validate_env(self) -> None:
+        self.twfy_key = os.environ.get("THEYWORKFORYOU_API_KEY", "")
+        if not self.twfy_key:
+            raise SystemExit(
+                "THEYWORKFORYOU_API_KEY not set\n"
+                "Get a free key at https://www.theyworkforyou.com/api/key"
+            )
 
-# ── Database ───────────────────────────────────────────────────────────────────
+    def fetch_records(self, mp: dict) -> list[dict]:
+        return _get_appg_roles(mp["nameDisplayAs"], self.twfy_key)
 
-def _fetch_existing_hashes(cur, mp_id: int) -> dict[str, str]:
-    cur.execute(
-        "SELECT source_id, content_hash FROM appg_vectors WHERE mp_id = %s",
-        (mp_id,),
-    )
-    return {row[0]: row[1] for row in cur.fetchall()}
+    def build_content(self, name: str, party: str, role: dict) -> str:
+        return _build_content(name, party, role)
 
+    def source_id(self, member_id: int, role: dict) -> str:
+        return f"appg_{member_id}_{sha256(role['appg_name'] + role['role'])[:12]}"
 
-def _upsert(cur, rows: list[dict]) -> None:
-    psycopg2.extras.execute_batch(
-        cur,
-        """
-        INSERT INTO appg_vectors
-            (source_id, mp_id, mp_name, appg_name, role,
-             content, metadata, embedding, content_hash)
-        VALUES
-            (%(source_id)s, %(mp_id)s, %(mp_name)s, %(appg_name)s, %(role)s,
-             %(content)s, %(metadata)s, %(embedding)s, %(content_hash)s)
-        ON CONFLICT (source_id) DO UPDATE SET
-            mp_name      = EXCLUDED.mp_name,
-            appg_name    = EXCLUDED.appg_name,
-            role         = EXCLUDED.role,
-            content      = EXCLUDED.content,
-            metadata     = EXCLUDED.metadata,
-            embedding    = EXCLUDED.embedding,
-            content_hash = EXCLUDED.content_hash
-        """,
-        rows,
-    )
+    def metadata(self, role: dict) -> dict:
+        return {}
 
+    def row_extras(self, role: dict) -> dict:
+        return {"appg_name": role["appg_name"], "role": role["role"]}
 
-# ── Embeddings ─────────────────────────────────────────────────────────────────
-
-def _embed_batch(client: OpenAI, texts: list[str]) -> list[list[float]]:
-    response = client.embeddings.create(model=EMBED_MODEL, input=texts)
-    return [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
-
-
-# ── Per-MP ingestion ───────────────────────────────────────────────────────────
-
-def _ingest_mp(conn, client: OpenAI, mp: dict, twfy_key: str) -> dict:
-    member_id = mp["id"]
-    name      = mp["nameDisplayAs"]
-    party     = mp["latestParty"]["name"]
-
-    roles = _get_appg_roles(name, twfy_key)
-    if not roles:
-        return {"status": "no-appgs"}
-
-    with conn.cursor() as cur:
-        existing = _fetch_existing_hashes(cur, member_id)
-
-    to_embed = []
-    for role in roles:
-        source_id    = f"appg_{member_id}_{_sha256(role['appg_name'] + role['role'])[:12]}"
-        content      = _build_content(name, party, role)
-        content_hash = _sha256(content)
-        role["_source_id"]    = source_id
-        role["_content"]      = content
-        role["_content_hash"] = content_hash
-        if existing.get(source_id) != content_hash:
-            to_embed.append(role)
-
-    if not to_embed:
-        return {"status": "skip", "count": len(roles)}
-
-    embeddings = []
-    for i in range(0, len(to_embed), EMBED_BATCH):
-        batch = to_embed[i : i + EMBED_BATCH]
-        embeddings.extend(_embed_batch(client, [r["_content"] for r in batch]))
-
-    rows = []
-    for role, embedding in zip(to_embed, embeddings):
-        rows.append({
-            "source_id":    role["_source_id"],
-            "mp_id":        member_id,
-            "mp_name":      name,
-            "appg_name":    role["appg_name"],
-            "role":         role["role"],
-            "content":      role["_content"],
-            "metadata":     json.dumps({}),
-            "embedding":    embedding,
-            "content_hash": role["_content_hash"],
-        })
-
-    with conn.cursor() as cur:
-        _upsert(cur, rows)
-    conn.commit()
-
-    return {"status": "embedded", "embedded": len(rows), "skipped": len(roles) - len(to_embed)}
-
-
-# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    db_url   = os.environ.get("DATABASE_URL", "")
-    twfy_key = os.environ.get("THEYWORKFORYOU_API_KEY", "")
-    if not db_url:
-        raise SystemExit("DATABASE_URL not set")
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY not set")
-    if not twfy_key:
-        raise SystemExit(
-            "THEYWORKFORYOU_API_KEY not set\n"
-            "Get a free key at https://www.theyworkforyou.com/api/key"
-        )
-
-    db_url = db_url.replace("postgres://", "postgresql://", 1)
-    run_log.check_disk_space(db_url)
-    conn   = psycopg2.connect(db_url)
-    register_vector(conn)
-    client = OpenAI()
-
-    log.info("Fetching MP list…")
-    mps = _all_mps()
-    log.info("Found %d current MPs.", len(mps))
-
-    counts = {"embedded": 0, "skipped": 0, "no-appgs": 0, "error": 0}
-    run_id = run_log.start_run(db_url, "ingest_appgs")
-    try:
-        for i, mp in enumerate(mps, 1):
-            name = mp["nameDisplayAs"]
-            try:
-                result = _ingest_mp(conn, client, mp, twfy_key)
-                status = result["status"]
-                if status == "embedded":
-                    counts["embedded"] += result["embedded"]
-                    counts["skipped"]  += result["skipped"]
-                    log.info("[%3d/%d] embedded %-3d  skipped %-3d  %s",
-                             i, len(mps), result["embedded"], result["skipped"], name)
-                elif status == "skip":
-                    counts["skipped"] += result["count"]
-                    log.info("[%3d/%d] skip  (%d unchanged)  %s", i, len(mps), result["count"], name)
-                else:
-                    counts["no-appgs"] += 1
-                    log.info("[%3d/%d] no-appgs  %s", i, len(mps), name)
-            except Exception as exc:
-                counts["error"] += 1
-                log.error("[%3d/%d] ERROR %s: %s", i, len(mps), name, exc)
-
-            run_log.update_run_progress(db_url, run_id, counts["embedded"], counts["skipped"], counts["error"])
-            time.sleep(0.5)  # TWFY rate limit is lenient but be polite
-
-        conn.close()
-        log.info(
-            "\nDone. embedded=%d  skipped=%d  no-appgs=%d  errors=%d",
-            counts["embedded"], counts["skipped"], counts["no-appgs"], counts["error"],
-        )
-        run_log.finish_run(db_url, run_id, "success", counts["embedded"], counts["skipped"], counts["error"])
-    except Exception as exc:
-        conn.close()
-        run_log.finish_run(db_url, run_id, "error", counts["embedded"], counts["skipped"], counts["error"], notes=str(exc))
-        raise
+    AppgIngestion().run()
 
 
 if __name__ == "__main__":

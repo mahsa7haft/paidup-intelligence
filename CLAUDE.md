@@ -35,8 +35,9 @@ See README.md for the full architecture diagram.
 | `electoral.py` | Electoral Commission donations API client. |
 | `theyworkforyou.py` | TheyWorkForYou API — APPG memberships. |
 | `database.py` | Postgres connection pool. Vector table upserts and similarity search. |
-| `embeddings.py` | OpenAI embeddings client. Handles batching and smart re-embed (hash check). |
+| `embeddings.py` | OpenAI embeddings client for query-time embedding (`/ask` path). |
 | `agent.py` | LangGraph agent — think → tool → execute → answer loop. |
+| `ingest_common.py` | Shared ingestion machinery (Template Method): run/checkpoint/run-log skeleton, per-MP loop, hashing, batch embedding, enrichment, generic upsert. |
 | `ingest_interests.py` | Ingestion script: Parliament Register → interests_vectors. |
 | `ingest_donations.py` | Ingestion script: Electoral Commission → party_donations_vectors. |
 | `ingest_votes.py` | Ingestion script: Parliament votes → votes_vectors. |
@@ -44,7 +45,8 @@ See README.md for the full architecture diagram.
 
 ### Ingestion pattern
 
-All four ingestion scripts follow the same pattern:
+All four ingestion scripts share one pattern, implemented once in `ingest_common.py`
+(Template Method):
 
 1. Fetch records from source API
 2. Build a text chunk (`content`) for each record
@@ -52,6 +54,11 @@ All four ingestion scripts follow the same pattern:
 4. Check hash against existing row via `ON CONFLICT (source_id)`
 5. Only call OpenAI embeddings API when hash changed or record is new
 6. Upsert into vector table with embedding + metadata
+
+`IngestionPipeline` owns the run skeleton (env checks, disk safety, run logging,
+checkpointing). `MPIngestionPipeline` adds the per-MP loop used by interests, votes,
+and APPGs; donations iterates EC API pages with its own `ingest()`. Each script keeps
+only its source-specific parsing, content sentence, source_id, and table columns.
 
 Metadata is enriched from PaidUp's shared `donor_company_links` and `donor_tags` tables where relevant (interests and donations).
 

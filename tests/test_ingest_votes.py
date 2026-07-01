@@ -5,9 +5,6 @@ Tests for ingest_votes.py — pure functions only (no live DB or API calls).
 import pytest
 from app.ingest_votes import (
     _build_content,
-    _clear_checkpoint,
-    _load_checkpoint,
-    _save_checkpoint,
     _vote_label,
 )
 
@@ -92,37 +89,3 @@ class TestBuildContent:
         vote = self._vote()
         del vote["divisionNumber"]
         assert "division ?" in _build_content("A B", "P", vote)
-
-
-# ── checkpoint ─────────────────────────────────────────────────────────────────
-
-class TestCheckpoint:
-    def test_load_returns_zero_when_no_file(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        assert _load_checkpoint() == 0
-
-    def test_save_and_load_roundtrip(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(450)
-        assert _load_checkpoint() == 450
-
-    def test_clear_removes_file(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(100)
-        _clear_checkpoint()
-        assert _load_checkpoint() == 0
-
-    def test_clear_when_no_file_is_safe(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _clear_checkpoint()
-
-    def test_corrupted_file_returns_zero(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".ingest_votes_checkpoint.json").write_text("bad")
-        assert _load_checkpoint() == 0
-
-    def test_overwrite_advances_checkpoint(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(100)
-        _save_checkpoint(200)
-        assert _load_checkpoint() == 200

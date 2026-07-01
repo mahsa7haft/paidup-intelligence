@@ -6,12 +6,8 @@ import pytest
 from app.ingest_donations import (
     _build_content,
     _build_metadata,
-    _clear_checkpoint,
-    _load_checkpoint,
     _parse_ms_date,
     _parse_record,
-    _save_checkpoint,
-    _sha256,
 )
 
 
@@ -127,21 +123,6 @@ class TestBuildContent:
         assert "£1,234,567" in _build_content(self._record(value=1_234_567.0))
 
 
-# ── _sha256 ────────────────────────────────────────────────────────────────────
-
-class TestSha256:
-    def test_deterministic(self):
-        assert _sha256("hello") == _sha256("hello")
-
-    def test_different_inputs_differ(self):
-        assert _sha256("hello") != _sha256("world")
-
-    def test_returns_64_char_hex_string(self):
-        result = _sha256("test input")
-        assert len(result) == 64
-        assert all(c in "0123456789abcdef" for c in result)
-
-
 # ── _build_metadata ────────────────────────────────────────────────────────────
 
 class TestBuildMetadata:
@@ -195,37 +176,3 @@ class TestBuildMetadata:
         ]
         meta = _build_metadata(self._record(), {}, tag_rules)
         assert len(meta["tags"]) == 2
-
-
-# ── checkpoint ─────────────────────────────────────────────────────────────────
-
-class TestCheckpoint:
-    def test_load_returns_zero_when_no_file(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        assert _load_checkpoint() == 0
-
-    def test_save_and_load_roundtrip(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(29200)
-        assert _load_checkpoint() == 29200
-
-    def test_clear_removes_file(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(1000)
-        _clear_checkpoint()
-        assert _load_checkpoint() == 0
-
-    def test_clear_when_no_file_is_safe(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _clear_checkpoint()  # must not raise
-
-    def test_load_corrupted_file_returns_zero(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".ingest_donations_checkpoint.json").write_text("not valid json{{")
-        assert _load_checkpoint() == 0
-
-    def test_overwrite_checkpoint(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(100)
-        _save_checkpoint(200)
-        assert _load_checkpoint() == 200

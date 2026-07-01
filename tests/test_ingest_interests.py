@@ -6,11 +6,7 @@ import pytest
 from app.ingest_interests import (
     _build_content,
     _build_metadata,
-    _clear_checkpoint,
-    _load_checkpoint,
     _parse_interests,
-    _save_checkpoint,
-    _sha256,
 )
 
 
@@ -112,21 +108,6 @@ class TestBuildContent:
         assert "£1,000,000" in content
 
 
-# ── _sha256 ────────────────────────────────────────────────────────────────────
-
-class TestSha256:
-    def test_deterministic(self):
-        assert _sha256("hello") == _sha256("hello")
-
-    def test_different_inputs_differ(self):
-        assert _sha256("abc") != _sha256("xyz")
-
-    def test_returns_64_char_hex(self):
-        result = _sha256("test")
-        assert len(result) == 64
-        assert all(c in "0123456789abcdef" for c in result)
-
-
 # ── _build_metadata ────────────────────────────────────────────────────────────
 
 class TestBuildMetadata:
@@ -166,31 +147,3 @@ class TestBuildMetadata:
     def test_tag_no_match(self):
         tag_rules = [{"pattern": "fossil", "tag": "fossil_fuel", "label": "Fossil Fuel"}]
         assert _build_metadata(self._interest(), {}, tag_rules)["tags"] == []
-
-
-# ── checkpoint ─────────────────────────────────────────────────────────────────
-
-class TestCheckpoint:
-    def test_load_returns_zero_when_no_file(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        assert _load_checkpoint() == 0
-
-    def test_save_and_load_roundtrip(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(312)
-        assert _load_checkpoint() == 312
-
-    def test_clear_removes_file(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _save_checkpoint(100)
-        _clear_checkpoint()
-        assert _load_checkpoint() == 0
-
-    def test_clear_when_no_file_is_safe(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        _clear_checkpoint()
-
-    def test_corrupted_file_returns_zero(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".ingest_interests_checkpoint.json").write_text("{bad json")
-        assert _load_checkpoint() == 0

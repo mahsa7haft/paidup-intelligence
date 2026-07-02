@@ -15,6 +15,22 @@ def client():
     return main.app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def reset_rate_limiter():
+    """Clear per-IP hit counts before each test so limits don't bleed across tests."""
+    main._hits.clear()
+    yield
+    main._hits.clear()
+
+
+@pytest.fixture(autouse=True)
+def isolate_cache():
+    """Never touch the real Redis in tests — every lookup misses, every store no-ops."""
+    with patch("app.main.cache.lookup", return_value=(None, None)), \
+         patch("app.main.cache.store"):
+        yield
+
+
 def _mock_agent(answer="the answer"):
     """Agent whose invoke returns a final message with `answer` content."""
     msg = MagicMock()
@@ -75,3 +91,30 @@ class TestAsk:
             res = client.post("/ask", json={"question": "q"})
         assert res.status_code == 500
         assert "error" in res.get_json()
+
+
+class TestRateLimit:
+    def _ask(self, client, ip):
+        return client.post("/ask", json={"question": "q"}, headers={"X-Forwarded-For": ip})
+
+    def test_blocks_after_limit(self, client, monkeypatch):
+        monkeypatch.setattr(main, "RATE_LIMIT_PER_HOUR", 2)
+        with patch("app.main.get_agent", return_value=_mock_agent()):
+            assert self._ask(client, "1.1.1.1").status_code == 200
+            assert self._ask(client, "1.1.1.1").status_code == 200
+            blocked = self._ask(client, "1.1.1.1")
+        assert blocked.status_code == 429
+        assert "Rate limit" in blocked.get_json()["error"]
+
+    def test_different_ips_independent(self, client, monkeypatch):
+        monkeypatch.setattr(main, "RATE_LIMIT_PER_HOUR", 1)
+        with patch("app.main.get_agent", return_value=_mock_agent()):
+            assert self._ask(client, "1.1.1.1").status_code == 200
+            assert self._ask(client, "1.1.1.1").status_code == 429   # same IP, over limit
+            assert self._ask(client, "2.2.2.2").status_code == 200   # different IP, fine
+
+    def test_disabled_when_zero(self, client, monkeypatch):
+        monkeypatch.setattr(main, "RATE_LIMIT_PER_HOUR", 0)
+        with patch("app.main.get_agent", return_value=_mock_agent()):
+            for _ in range(5):
+                assert self._ask(client, "9.9.9.9").status_code == 200

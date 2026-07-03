@@ -13,7 +13,9 @@ Run:
 
 import logging
 import os
+import time
 import uuid
+from collections import defaultdict
 
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
@@ -27,6 +29,32 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+# ── Rate limiting ────────────────────────────────────────────────────────────────
+# Each /ask call is real LLM spend, and the endpoint is public. Cap questions per
+# client per hour so a stranger (or a bot) can't run up the bill. In-memory and
+# per-process — fine for a test launch; use Redis if we run multiple workers.
+RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "30"))  # 0 disables
+_RATE_WINDOW = 3600
+_hits: dict[str, list[float]] = defaultdict(list)
+
+
+def _client_ip() -> str:
+    # Railway/proxies put the real client first in X-Forwarded-For.
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return fwd.split(",")[0].strip() if fwd else (request.remote_addr or "unknown")
+
+
+def _rate_limited(ip: str) -> bool:
+    if RATE_LIMIT_PER_HOUR <= 0:
+        return False
+    now = time.time()
+    recent = [t for t in _hits[ip] if now - t < _RATE_WINDOW]
+    _hits[ip] = recent
+    if len(recent) >= RATE_LIMIT_PER_HOUR:
+        return True
+    recent.append(now)
+    return False
 
 # Compile the agent once with an in-memory checkpointer so conversations persist per
 # thread_id across requests. MemorySaver is in-process (cleared on restart) — fine for
@@ -54,6 +82,9 @@ def health():
 
 @app.route("/ask", methods=["POST"])
 def ask_route():
+    if _rate_limited(_client_ip()):
+        return jsonify({"error": "Rate limit reached. Please try again later."}), 429
+
     data = request.get_json(silent=True) or {}
     question = (data.get("question") or "").strip()
     if not question:

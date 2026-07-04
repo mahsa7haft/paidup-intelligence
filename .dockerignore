@@ -1,0 +1,13 @@
+.git
+.venv*
+.env
+__pycache__
+*.pyc
+.pytest_cache
+tests
+docs
+skills
+docker-compose.yml
+.ingest_*_checkpoint.json
+.claude
+.vscode

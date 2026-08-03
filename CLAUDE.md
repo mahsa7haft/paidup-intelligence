@@ -30,17 +30,28 @@ See README.md for the full architecture diagram.
 
 | File | Responsibility |
 |---|---|
-| `main.py` | Flask routes for `/ask`. Orchestrates agent calls. |
-| `parliament.py` | Parliament Members + Interests API client. Copied from PaidUp. |
-| `electoral.py` | Electoral Commission donations API client. |
-| `theyworkforyou.py` | TheyWorkForYou API — APPG memberships. |
-| `database.py` | Postgres connection pool. Vector table upserts and similarity search. |
-| `embeddings.py` | OpenAI embeddings client. Handles batching and smart re-embed (hash check). |
+| `main.py` | Flask routes for `/ask` + `/health`. Per-IP rate limiting; orchestrates agent calls. |
 | `agent.py` | LangGraph agent — think → tool → execute → answer loop. |
+| `agent_tools.py` | LangChain `@tool` wrappers over `similarity_search`; docstrings are the tool descriptions Claude reads (ADR 015). |
+| `mcp_server.py` | MCP server exposing the same search tools over the wire. |
+| `database.py` | Postgres connection pool, vector-table upserts, and `similarity_search`. |
+| `embeddings.py` | OpenAI embeddings client. Batching and smart re-embed (hash check). |
+| `cache.py` | L1 answer cache (Redis) — exact normalised-text match, no semantic L2 (ADR 016). |
+| `config.py` | Shared ingestion constants: API endpoints, embed model/batch, disk ceiling. |
+| `run_log.py` | Records each ingestion run (embedded/skipped counts, timings) to `ingest_runs`. |
 | `ingest_interests.py` | Ingestion script: Parliament Register → interests_vectors. |
 | `ingest_donations.py` | Ingestion script: Electoral Commission → party_donations_vectors. |
 | `ingest_votes.py` | Ingestion script: Parliament votes → votes_vectors. |
-| `ingest_appgs.py` | Ingestion script: TheyWorkForYou APPGs → appg_vectors. |
+| `ingest_appgs.py` | Ingestion script: TheyWorkForYou APPGs → appg_vectors (deferred; table empty). |
+| `ingest_all.py` | Runs interests → donations → votes in sequence. Cron entry point. |
+
+The source-API HTTP calls (Parliament Members/Interests, Electoral Commission,
+TheyWorkForYou) are made inline inside the `ingest_*.py` scripts, with the
+endpoints centralised in `config.py` — there is no separate API-client module.
+PaidUp has standalone `parliament.py` / `theyworkforyou.py` clients for the same
+upstreams; that logic is intentionally *not* shared across the two repos (they
+deploy independently). If the duplication ever bites, extract a small shared
+package rather than copy-editing both by hand.
 
 ### Ingestion pattern
 

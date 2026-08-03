@@ -1,0 +1,154 @@
+# Combined VPS deployment: PaidUp + PaidUp Intelligence on one host.
+#
+# Expects BOTH repos cloned as siblings (this file lives in
+# paidup-intelligence/deploy/):
+#
+#   ~/paidup
+#   ~/paidup-intelligence   <- run `docker compose` from here: deploy/
+#
+# Usage (see ../DEPLOY.md for the full runbook):
+#   cp .env.example .env && edit .env
+#   docker compose up -d --build            # IP-only: http://SERVER_IP:5002 and :5003
+#   docker compose --profile tls up -d      # once you have domains (adds Caddy + HTTPS)
+#   docker compose --profile ingest run --rm ingest   # load the vector tables
+#
+# Two separate Postgres instances on purpose (see ../docs/engineering-maturity.md):
+# mixing OLTP and bulk vector writes previously filled the disk.
+
+services:
+  paidup:
+    build: ../../paidup
+    container_name: paidup
+    env_file: .env
+    environment:
+      PORT: "5002"
+      DATABASE_URL: postgresql://paidup:${PAIDUP_DB_PASSWORD}@paidup-db:5432/paidup
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "5002:5002"
+    depends_on:
+      paidup-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5002/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  paidup-intelligence:
+    build: ..
+    container_name: paidup-intelligence
+    env_file: .env
+    environment:
+      PORT: "5003"
+      DATABASE_URL: postgresql://intelligence:${INTELLIGENCE_DB_PASSWORD}@intelligence-db:5432/intelligence
+      # Enrichment tables (donor_company_links, donor_tags) live in PaidUp's DB.
+      PAIDUP_DATABASE_URL: postgresql://paidup:${PAIDUP_DB_PASSWORD}@paidup-db:5432/paidup
+      REDIS_URL: redis://redis:6379/1
+    ports:
+      - "5003:5003"
+    depends_on:
+      intelligence-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5003/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot ingestion into the vector tables. Not started by `up`.
+  ingest:
+    build: ..
+    profiles: ["ingest"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://intelligence:${INTELLIGENCE_DB_PASSWORD}@intelligence-db:5432/intelligence
+      PAIDUP_DATABASE_URL: postgresql://paidup:${PAIDUP_DB_PASSWORD}@paidup-db:5432/paidup
+    command: ["python", "-m", "app.ingest_all"]
+    depends_on:
+      intelligence-db:
+        condition: service_healthy
+
+  paidup-db:
+    image: postgres:16
+    container_name: paidup-db
+    environment:
+      POSTGRES_USER: paidup
+      POSTGRES_PASSWORD: ${PAIDUP_DB_PASSWORD}
+      POSTGRES_DB: paidup
+    volumes:
+      - paidup_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paidup -d paidup"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  intelligence-db:
+    image: pgvector/pgvector:pg16
+    container_name: intelligence-db
+    environment:
+      POSTGRES_USER: intelligence
+      POSTGRES_PASSWORD: ${INTELLIGENCE_DB_PASSWORD}
+      POSTGRES_DB: intelligence
+    volumes:
+      - intelligence_pgdata:/var/lib/postgresql/data
+      # Seeds the schema ONCE, on first init of an empty data volume.
+      - ../docs/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U intelligence -d intelligence"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: paidup-redis
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # HTTPS reverse proxy. Only starts with `--profile tls`, once PAIDUP_DOMAIN and
+  # INTELLIGENCE_DOMAIN are real DNS names pointed at this host. Caddy fetches and
+  # renews Let's Encrypt certs automatically.
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PAIDUP_DOMAIN: ${PAIDUP_DOMAIN}
+      INTELLIGENCE_DOMAIN: ${INTELLIGENCE_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - paidup
+      - paidup-intelligence
+    restart: unless-stopped
+
+volumes:
+  paidup_pgdata:
+  intelligence_pgdata:
+  redis_data:
+  caddy_data:
+  caddy_config:

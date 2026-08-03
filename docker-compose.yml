@@ -1,10 +1,17 @@
 # Local development stack for paidup-intelligence.
-# Brings up a Postgres instance with pgvector preinstalled, seeded from docs/schema.sql.
+# Brings up the /ask app against a pgvector Postgres (seeded from docs/schema.sql)
+# and a Redis L1 cache.
 #
-#   docker compose up -d      # start in background
-#   docker compose logs -f db # watch logs
+#   cp .env.example .env      # add OPENAI_API_KEY + ANTHROPIC_API_KEY first
+#   docker compose up -d      # start db + redis + app
+#   docker compose logs -f app
 #   docker compose down       # stop (keeps data)
 #   docker compose down -v    # stop AND wipe the data volume
+#
+#   # one-shot ingestion into the local db (not part of `up`):
+#   docker compose --profile ingest run --rm ingest
+#
+# For a full two-app VPS deployment (PaidUp + this) see deploy/ and DEPLOY.md.
 
 services:
   db:
@@ -44,6 +51,43 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  app:
+    build: .
+    container_name: intelligence-app
+    # API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, THEYWORKFORYOU_API_KEY) come
+    # from .env; the DB/Redis URLs below point at the compose services and
+    # override anything in .env.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://intelligence:localdev@db:5432/intelligence
+      REDIS_URL: redis://redis:6379/0
+      PORT: "5003"
+    ports:
+      - "5003:5003"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-shot ingestion. Not started by `up`; run explicitly:
+  #   docker compose --profile ingest run --rm ingest
+  ingest:
+    build: .
+    profiles: ["ingest"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://intelligence:localdev@db:5432/intelligence
+    command: ["python", "-m", "app.ingest_all"]
+    depends_on:
+      db:
+        condition: service_healthy
 
 volumes:
   intelligence_pgdata:

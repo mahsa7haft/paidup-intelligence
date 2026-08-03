@@ -1,0 +1,11 @@
+# Reverse proxy for the two apps, with automatic HTTPS.
+# Used only by the `tls` compose profile. PAIDUP_DOMAIN and INTELLIGENCE_DOMAIN
+# are read from deploy/.env and must be real DNS names pointed at this host.
+
+{$PAIDUP_DOMAIN} {
+	reverse_proxy paidup:5002
+}
+
+{$INTELLIGENCE_DOMAIN} {
+	reverse_proxy paidup-intelligence:5003
+}

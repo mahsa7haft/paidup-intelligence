@@ -25,7 +25,7 @@ purging from GitHub.
 
 | Secret | Grants | Rotated | Usage reviewed |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Billable Claude API calls | ☑ disabled (delete pending) | ☐ |
+| `ANTHROPIC_API_KEY` | Billable Claude API calls | ☑ deleted | ☐ |
 | `OPENAI_API_KEY` | Billable OpenAI calls (embeddings) | ☑ revoked | ☐ |
 | `DATABASE_URL` | Write/owner on intelligence-postgres | ☐ | ☐ |
 | `DATABASE_URL_READONLY` | SELECT on intelligence-postgres | ☐ | ☐ |
@@ -38,7 +38,7 @@ purging from GitHub.
 
 | Secret | Grants | Rotated | Usage reviewed |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Billable Claude API calls (may be the same key as above) | ☑ disabled (delete pending) | ☐ |
+| `ANTHROPIC_API_KEY` | Billable Claude API calls (may be the same key as above) | ☑ deleted | ☐ |
 | `DATABASE_URL` | paidup-postgres owner (same DB as `PAIDUP_DATABASE_URL` above) | ☐ | ☐ |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Cloudflare R2 bucket read/write | ☐ | ☐ |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | Langfuse traces (contain prompts and responses) | ☐ | ☐ |
@@ -75,7 +75,7 @@ purging from GitHub.
 | 2026-10-21 | Railway publishes preliminary disclosure |
 | 2026-10-23 | Railway emails: workspace matches attacker's search pattern; decryption unconfirmed |
 | 2026-10-23 | Repo history audited — clean |
-| 2026-10-23 | Anthropic keys disabled (not reissued; nothing needs deploying) |
+| 2026-10-23 | Anthropic keys disabled, then deleted (not reissued; nothing needs deploying) |
 | 2026-10-23 | OpenAI key revoked (not reissued) |
 | | DB passwords rotated, old sessions terminated |
 | | Remaining keys rotated |

@@ -13,11 +13,15 @@ attacker's search pattern. Railway cannot confirm whether the secrets were
 decrypted. The attack ended by 2026-10-22 03:32 UTC. This project keeps every
 secret in Railway service variables, so all of them are treated as compromised.
 
-The repo itself was checked: a full git-history search found only placeholders
+Two Railway projects are affected: **paidup-intelligence** and **PaidUp**. Both repos
+were checked: a full git-history search found only placeholders
 (`.env.example`) and local-dev Docker credentials (`localdev`). `.env` has always
-been gitignored. Nothing needs purging from GitHub.
+been gitignored. PaidUp's full history (147 commits) is likewise clean. Nothing needs
+purging from GitHub.
 
 ## Exposure
+
+### paidup-intelligence
 
 | Secret | Grants | Rotated | Usage reviewed |
 |---|---|---|---|
@@ -29,6 +33,18 @@ been gitignored. Nothing needs purging from GitHub.
 | `THEYWORKFORYOU_API_KEY` | TWFY API quota | ☐ | n/a |
 | `REDIS_URL` | L1 query cache | ☐ | n/a |
 | GitHub (Railway deploy integration) | Repo read/deploy | n/a | ☐ |
+
+### PaidUp
+
+| Secret | Grants | Rotated | Usage reviewed |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | Billable Claude API calls (may be the same key as above) | ☐ | ☐ |
+| `DATABASE_URL` | paidup-postgres owner (same DB as `PAIDUP_DATABASE_URL` above) | ☐ | ☐ |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | Cloudflare R2 bucket read/write | ☐ | ☐ |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | Langfuse traces (contain prompts and responses) | ☐ | ☐ |
+| `FLASK_SECRET_KEY` | Signs session cookies; rotating logs everyone out | ☐ | n/a |
+| `THEYWORKFORYOU_API_KEY` | TWFY API quota | ☐ | n/a |
+| `REDIS_URL` | Cache | ☐ | n/a |
 
 ## Response checklist
 

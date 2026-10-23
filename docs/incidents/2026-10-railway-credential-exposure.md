@@ -6,8 +6,11 @@ date: 2026-10-23
 
 ## What happened
 
-Railway reported an attack on its platform in which the attacker went after
-environment variables, specifically AI provider API keys. This project keeps every
+Railway disclosed a security incident on 2026-10-21. The attacker searched customer
+environment variables for AI and cloud provider API keys. Railway's follow-up email
+says this workspace ("Mahsa Clinton's Projects") has variables matching the
+attacker's search pattern. Railway cannot confirm whether the secrets were
+decrypted. The attack ended by 2026-10-22 03:32 UTC. This project keeps every
 secret in Railway service variables, so all of them are treated as compromised.
 
 The repo itself was checked: a full git-history search found only placeholders
@@ -25,6 +28,7 @@ been gitignored. Nothing needs purging from GitHub.
 | `PAIDUP_DATABASE_URL` | PaidUp DB (`donor_company_links`, `donor_tags`) | ☐ | ☐ |
 | `THEYWORKFORYOU_API_KEY` | TWFY API quota | ☐ | n/a |
 | `REDIS_URL` | L1 query cache | ☐ | n/a |
+| GitHub (Railway deploy integration) | Repo read/deploy | n/a | ☐ |
 
 ## Response checklist
 
@@ -38,17 +42,23 @@ been gitignored. Nothing needs purging from GitHub.
 3. **Other keys** — regenerate the TheyWorkForYou key and Redis password.
 4. **Elsewhere** — update any other place the old keys were copied (PaidUp's
    Railway service, local `.env` files).
-5. **Accounts** — confirm 2FA on Railway, Anthropic, OpenAI, GitHub.
-6. **Close out** — once Railway publishes its exposure window, re-check usage logs
-   for exactly that window, then fill in the timeline below and set status to
+5. **GitHub** — Railway's notice asks for this. Review the security log
+   (Settings → Security log), authorized OAuth/GitHub Apps, deploy keys, and recent
+   pushes to both repos. No Docker Hub images are published (the Dockerfile only
+   pulls `ghcr.io/astral-sh/uv`), so there are no registry credentials to check.
+6. **Accounts** — confirm 2FA on Railway, Anthropic, OpenAI, GitHub.
+7. **Close out** — re-check usage logs for the whole window (start unknown, so go
+   back at least to 2026-10-01, through today, since a copied key can be used later), then fill in the timeline below and set status to
    Resolved.
 
 ## Timeline
 
 | When (UTC) | Event |
 |---|---|
-| | Railway attack window (per Railway notice) |
-| 2026-10-23 | Incident noticed; repo history audited — clean |
+| unknown → 2026-10-22 03:32 | Railway attack window (Railway: "no longer under direct attack" as of 03:32) |
+| 2026-10-21 | Railway publishes preliminary disclosure |
+| 2026-10-23 | Railway emails: workspace matches attacker's search pattern; decryption unconfirmed |
+| 2026-10-23 | Repo history audited — clean |
 | | Anthropic key revoked + reissued |
 | | OpenAI key revoked + reissued |
 | | DB passwords rotated, old sessions terminated |
